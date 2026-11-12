@@ -606,7 +606,7 @@ describe("serverSettings helpers", () => {
           providerInstances: { [instanceId]: { enabled: false } },
           profileToolAccess: {
             work: { mcpServers: { codex: { build: true } } },
-          },
+          } as const,
         },
       },
     };
