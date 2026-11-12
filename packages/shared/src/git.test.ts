@@ -268,6 +268,7 @@ describe("applyGitStatusStreamEvent", () => {
 
   it("preserves local-only fields when applying a remote update", () => {
     const current: VcsStatusResult = {
+      vcsKind: "arc",
       isRepo: true,
       sourceControlProvider: {
         kind: SourceControlProviderKind.make("github"),

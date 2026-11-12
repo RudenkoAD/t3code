@@ -1,0 +1,164 @@
+import type { ProjectProfile } from "@t3tools/contracts";
+import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
+import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
+import { toastManager } from "../ui/toast";
+
+function joinHome(base: string, ...segments: string[]) {
+  const separator = base.includes("\\") ? "\\" : "/";
+  return [base.replace(/[\\/]+$/, ""), ...segments].join(separator);
+}
+
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+export function ProfileNativeProvidersSettings({
+  profile,
+  profileHomeDirectory,
+}: {
+  readonly profile: ProjectProfile;
+  readonly profileHomeDirectory?: string;
+}) {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const providerSettings = settings.profileProviderSettings[profile];
+  const codexHome = profileHomeDirectory ? joinHome(profileHomeDirectory, profile, "codex") : null;
+  const claudeHome = profileHomeDirectory
+    ? joinHome(profileHomeDirectory, profile, "claude")
+    : null;
+
+  const setEnabled = (key: "codexEnabled" | "claudeEnabled", enabled: boolean) => {
+    const patch = { [key]: enabled };
+    updateSettings({ profileProviderSettings: { [profile]: patch } });
+  };
+
+  const copySetup = (value: string, target: string) => {
+    void writeTextToClipboard(value, target).then(
+      () => toastManager.add({ type: "success", title: `${target} copied` }),
+      () => toastManager.add({ type: "error", title: `Could not copy ${target}` }),
+    );
+  };
+
+  return (
+    <section className="space-y-3 rounded-lg border p-3" aria-label="Profile native providers">
+      <div>
+        <h3 className="text-sm font-medium">Codex and Claude configuration</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Each profile gets separate credentials and native MCP configuration. Sign in separately
+          inside each home; T3 does not copy credentials between profiles.
+        </p>
+      </div>
+      <div className="divide-y rounded-md border px-3">
+        <ProviderRow
+          name="Codex"
+          description={
+            codexHome ?? "Select a connected environment to show its isolated home path."
+          }
+          enabled={providerSettings.codexEnabled}
+          onEnabledChange={(value) => setEnabled("codexEnabled", value)}
+        />
+        <ProviderRow
+          name="Claude Code"
+          description={
+            claudeHome ?? "Select a connected environment to show its isolated home path."
+          }
+          enabled={providerSettings.claudeEnabled}
+          onEnabledChange={(value) => setEnabled("claudeEnabled", value)}
+        />
+      </div>
+      {!profileHomeDirectory ? (
+        <p className="text-xs text-muted-foreground">
+          Select or connect an environment to reveal its profile homes and native setup commands.
+        </p>
+      ) : null}
+      {codexHome && claudeHome ? (
+        <div className="space-y-2 rounded-md bg-muted/40 p-3">
+          <h4 className="text-sm font-medium">Add an MCP server</h4>
+          <p className="text-xs text-muted-foreground">
+            Use the matching profile home in the command. Replace placeholders with your MCP server
+            name, transport details and URL.
+          </p>
+          <div className="grid gap-2 @md/settings:grid-cols-2">
+            <SetupCommand
+              name="Codex"
+              command={`CODEX_HOME=${shellQuote(codexHome)} codex mcp add my-server --url https://example.org/mcp`}
+              onCopy={copySetup}
+              docsUrl="https://developers.openai.com/codex/mcp"
+              docsLabel="Codex MCP docs"
+            />
+            <SetupCommand
+              name="Claude Code"
+              command={`CLAUDE_CONFIG_DIR=${shellQuote(claudeHome)} claude mcp add --transport http --scope user my-server https://example.org/mcp`}
+              onCopy={copySetup}
+              docsUrl="https://code.claude.com/docs/en/mcp"
+              docsLabel="Claude Code MCP docs"
+            />
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ProviderRow({
+  name,
+  description,
+  enabled,
+  onEnabledChange,
+}: {
+  readonly name: string;
+  readonly description: string;
+  readonly enabled: boolean;
+  readonly onEnabledChange: (enabled: boolean) => void;
+}) {
+  return (
+    <div className="flex min-h-12 items-center justify-between gap-3 py-2">
+      <div className="min-w-0">
+        <div className="text-sm font-medium">{name}</div>
+        <code className="block break-all text-xs text-muted-foreground">{description}</code>
+      </div>
+      <Switch
+        size="sm"
+        checked={enabled}
+        aria-label={`${name} for profile`}
+        onCheckedChange={onEnabledChange}
+      />
+    </div>
+  );
+}
+
+function SetupCommand({
+  name,
+  command,
+  onCopy,
+  docsUrl,
+  docsLabel,
+}: {
+  readonly name: string;
+  readonly command: string;
+  readonly onCopy: (command: string, target: string) => void;
+  readonly docsUrl: string;
+  readonly docsLabel: string;
+}) {
+  return (
+    <div className="min-w-0 space-y-2 rounded-md border bg-background p-2">
+      <div className="text-xs font-medium">{name}</div>
+      <code className="block break-all text-2xs text-muted-foreground">{command}</code>
+      <div className="flex items-center gap-2">
+        <Button size="xs" variant="outline" onClick={() => onCopy(command, `${name} MCP command`)}>
+          Copy command
+        </Button>
+        <a
+          className="text-xs text-primary underline-offset-4 hover:underline"
+          href={docsUrl}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {docsLabel}
+        </a>
+      </div>
+    </div>
+  );
+}

@@ -9,7 +9,9 @@ import { resolvePastedPath } from "@t3tools/shared/path";
 import {
   type EnvironmentId,
   type ProjectIgnoredFile,
+  type ProjectProfile,
   type ScopedProjectRef,
+  resolveProjectProfile,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 import {
@@ -100,6 +102,10 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
   const [targetId, setTargetId] = useState(request.targetEnvironmentId);
   const target = targets.find((t) => t.environmentId === targetId) ?? targets[0] ?? null;
   const source = environments.find((env) => env.environmentId === request.projectRef.environmentId);
+  const projectProfile: ProjectProfile =
+    project && source?.serverConfig
+      ? resolveProjectProfile(source.serverConfig.settings, project.id)
+      : "personal";
   const sourceUrl =
     project?.repositoryIdentity?.origin?.remoteUrl ??
     project?.repositoryIdentity?.locator.remoteUrl ??
@@ -195,6 +201,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
         ),
         target: { environmentId: target.environmentId, label: target.label },
         projectId: newProjectId(),
+        profile: projectProfile,
         title: project.title,
         remoteUrl,
         destinationPath: destinationPath.trim(),

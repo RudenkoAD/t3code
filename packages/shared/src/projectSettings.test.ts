@@ -11,6 +11,7 @@ import {
   hasProjectSettingsOverrides,
   resolveNewThreadEnvMode,
   resolveProjectSettings,
+  resolveProjectToolAccess,
   resolveSendEnvMode,
   resolveWorktreeCleanup,
 } from "./projectSettings.ts";
@@ -34,6 +35,28 @@ describe("resolveSendEnvMode", () => {
 });
 
 describe("resolveProjectSettings", () => {
+  it("maps legacy Codex selections to the project's isolated provider ID", () => {
+    const codex = ProviderInstanceId.make("codex");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      projectProfiles: { [projectId]: "work" as const },
+      defaultModelSelection: createModelSelection(codex, "gpt-5"),
+      textGenerationModelSelection: createModelSelection(codex, "gpt-5"),
+    };
+
+    const resolved = resolveProjectSettings(settings, projectId).settings;
+
+    expect(resolved.defaultModelSelection?.instanceId).toBe(
+      ProviderInstanceId.make("t3profile_work_codex"),
+    );
+    expect(resolved.textGenerationModelSelection.instanceId).toBe(
+      ProviderInstanceId.make("t3profile_work_codex"),
+    );
+    expect(
+      resolveProjectSettings(settings, null).settings.textGenerationModelSelection.instanceId,
+    ).toBe(codex);
+  });
+
   it("ignores an override left undefined by a forward-compatible decode", () => {
     const resolved = resolveProjectSettings(
       {
@@ -81,7 +104,10 @@ describe("resolveProjectSettings", () => {
       projectId,
       project,
     );
-    expect(unfolded.settings.defaultModelSelection).toEqual(aggregateModel);
+    expect(unfolded.settings.defaultModelSelection).toEqual({
+      ...aggregateModel,
+      instanceId: ProviderInstanceId.make("t3profile_personal_codex"),
+    });
     expect(unfolded.settings.defaultThreadEnvMode).toBe("local");
     expect(unfolded.sources.defaultModelSelection).toBe("project");
     const overridden = resolveProjectSettings(
@@ -106,11 +132,8 @@ describe("resolveProjectSettings", () => {
   it("keeps the environment default model when the override's provider is disabled", () => {
     const disabledSelection = createModelSelection(ProviderInstanceId.make("claudeAgent"), "opus");
     const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
-      providerInstances: {
-        [ProviderInstanceId.make("claudeAgent")]: {
-          driver: ProviderDriverKind.make("claudeAgent"),
-          enabled: false,
-        },
+      profileProviderSettings: {
+        personal: { claudeEnabled: false },
       },
       projectSettingsOverrides: { [projectId]: { defaultModelSelection: disabledSelection } },
     });
@@ -130,13 +153,16 @@ describe("resolveProjectSettings", () => {
     };
     expect(
       resolveProjectSettings(settings, projectId).settings.textGenerationModelSelection.instanceId,
-    ).toBe(ProviderInstanceId.make("claudeAgent"));
+    ).toBe(ProviderInstanceId.make("t3profile_personal_claudeAgent"));
     expect(
       resolveProjectSettings(settings, otherProjectId).settings.textGenerationModelSelection,
-    ).toEqual(settings.textGenerationModelSelection);
+    ).toEqual({
+      ...settings.textGenerationModelSelection,
+      instanceId: ProviderInstanceId.make("t3profile_personal_codex"),
+    });
   });
 
-  it("falls back to a configured instance when every built-in one is off for the project", () => {
+  it("does not fall back to an unscoped custom instance when profile providers are off", () => {
     const codex = ProviderInstanceId.make("codex");
     const codexWork = ProviderInstanceId.make("codex_work");
     const settings = {
@@ -154,7 +180,75 @@ describe("resolveProjectSettings", () => {
     };
     expect(
       resolveProjectSettings(settings, projectId).settings.textGenerationModelSelection.instanceId,
-    ).toBe(codexWork);
+    ).not.toBe(codexWork);
+  });
+});
+
+describe("resolveProjectToolAccess", () => {
+  it("falls back to global settings when profile values are unset", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      enableAgentBrowserAccess: false,
+      enableAgentDeviceAccess: true,
+    };
+    expect(resolveProjectToolAccess(settings, projectId)).toEqual({
+      enableAgentBrowserAccess: false,
+      enableAgentDeviceAccess: true,
+    });
+  });
+
+  it("uses the project's profile values, with project overrides taking precedence per toggle", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      enableAgentBrowserAccess: true,
+      enableAgentDeviceAccess: false,
+      projectProfiles: { [projectId]: "work" as const },
+      profileToolAccess: {
+        ...DEFAULT_SERVER_SETTINGS.profileToolAccess,
+        work: { enableAgentBrowserAccess: false, enableAgentDeviceAccess: true },
+      },
+      projectSettingsOverrides: { [projectId]: { enableAgentDeviceAccess: false } },
+    };
+    expect(resolveProjectToolAccess(settings, projectId)).toEqual({
+      enableAgentBrowserAccess: false,
+      enableAgentDeviceAccess: false,
+    });
+    expect(resolveProjectToolAccess(settings, otherProjectId)).toEqual({
+      enableAgentBrowserAccess: true,
+      enableAgentDeviceAccess: false,
+    });
+  });
+
+  it("uses personal profile for a project without an assignment", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      profileToolAccess: {
+        ...DEFAULT_SERVER_SETTINGS.profileToolAccess,
+        work: { enableAgentBrowserAccess: false },
+        personal: { enableAgentBrowserAccess: true },
+      },
+    };
+    expect(resolveProjectToolAccess(settings, projectId).enableAgentBrowserAccess).toBe(true);
+  });
+
+  it("merges profile updates by replacing only the selected profile", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      profileToolAccess: {
+        work: { enableAgentBrowserAccess: false, enableAgentDeviceAccess: true },
+        personal: { enableAgentBrowserAccess: true },
+      },
+    };
+    const next = applyServerSettingsPatch(current, {
+      profileToolAccess: { work: { enableAgentDeviceAccess: false } },
+    });
+    expect(next.profileToolAccess).toEqual({
+      work: { enableAgentDeviceAccess: false },
+      personal: { enableAgentBrowserAccess: true },
+    });
+    expect(
+      applyServerSettingsPatch(next, { profileToolAccess: { work: null } }).profileToolAccess.work,
+    ).toEqual({});
   });
 });
 

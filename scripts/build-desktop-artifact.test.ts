@@ -547,6 +547,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
+  it.effect("gives local fork builds a distinct product name and no update feed", () =>
+    Effect.gen(function* () {
+      const fork = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.1.9-local-fork",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "arm64",
+        true,
+      );
+
+      assert.equal(fork.productName, "T3 Code (Local Fork)");
+      assert.isNull(fork.publish);
+      assert.equal((fork.mac as { identity?: string }).identity, "-");
+    }),
+  );
+
   it.effect("declares Calendar access for hosted commands in macOS builds", () =>
     Effect.gen(function* () {
       for (const version of ["0.1.0", "0.1.1-nightly.20261019.1"]) {
@@ -1698,6 +1719,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             signed: Option.none(),
             verbose: Option.none(),
             mockUpdates: Option.none(),
+            localFork: Option.none(),
             mockUpdateServerPort: Option.none(),
             wslRuntime: Option.none(),
           }),
@@ -1722,6 +1744,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         signed: Option.some(false),
         verbose: Option.some(false),
         mockUpdates: Option.some(false),
+        localFork: Option.none(),
         mockUpdateServerPort: Option.none(),
         wslRuntime: Option.none(),
       }).pipe(
@@ -1745,6 +1768,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.signed, false);
       assert.equal(resolved.verbose, false);
       assert.equal(resolved.mockUpdates, false);
+      assert.equal(resolved.localFork, false);
     }),
   );
 });

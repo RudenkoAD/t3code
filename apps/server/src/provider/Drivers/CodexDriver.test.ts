@@ -16,6 +16,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
@@ -104,6 +105,65 @@ const noSpawn = ChildProcessSpawner.make(() =>
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 it.layer(layerTest)("CodexDriver", (it) => {
+  it.effect("uses an isolated T3 home for profile instances", () =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const path = yield* Path.Path;
+      const instance = yield* CodexDriver.create({
+        instanceId: ProviderInstanceId.make("t3profile_work_codex"),
+        displayName: "Work Codex",
+        enabled: false,
+        environment: [],
+        config: CodexDriver.defaultConfig(),
+      });
+
+      expect(instance.continuationIdentity.continuationKey).toBe(
+        `codex:home:${path.join(stateDir, "profiles", "work", "codex")}`,
+      );
+    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn), Effect.scoped),
+  );
+
+  it.effect("passes the scoped home to the turn adapter", () =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const launches: Array<{
+        readonly settings: { readonly homePath: string };
+        readonly environment: NodeJS.ProcessEnv;
+      }> = [];
+      const clientFactory = CodexAdapterV2.CodexAppServerClientFactory.of({
+        open: (input) =>
+          Effect.sync(() => launches.push(input)).pipe(
+            Effect.andThen(Effect.die("captured adapter launch")),
+          ),
+      });
+      const instanceId = ProviderInstanceId.make("t3profile_work_codex");
+      const instance = yield* CodexDriver.create({
+        instanceId,
+        displayName: "Work Codex",
+        enabled: false,
+        environment: [],
+        config: CodexDriver.defaultConfig(),
+      }).pipe(Effect.provideService(CodexAdapterV2.CodexAppServerClientFactory, clientFactory));
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: stateDir,
+      });
+      yield* instance.orchestrationAdapter
+        .openSession({
+          threadId: ThreadId.make("profile-codex-adapter-home"),
+          providerSessionId: ProviderSessionId.make("profile-codex-adapter-home"),
+          modelSelection: { instanceId, model: "gpt-5.4" },
+          runtimePolicy,
+        })
+        .pipe(Effect.scoped, Effect.exit);
+
+      const launch = launches[0];
+      expect(launch).toBeDefined();
+      expect(launch?.settings.homePath).toBe(NodePath.join(stateDir, "profiles", "work", "codex"));
+    }).pipe(Effect.scoped),
+  );
+
   const checkManagedAccount = (replacementTiming: "unchanged" | "during-probe") =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");

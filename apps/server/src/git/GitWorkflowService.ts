@@ -184,21 +184,31 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((cwd) => withWorkspaceLease(cwd, effect)),
     );
 
+  const workflowError = (operation: string, cwd: string) => (cause: unknown) =>
+    new GitManagerError({ operation, cwd, detail: "Could not read repository state.", cause });
+  const commandError = (operation: string, cwd: string) => (cause: unknown) =>
+    new GitCommandError({
+      operation,
+      cwd,
+      command: "vcs-route",
+      detail: "Repository command failed.",
+      cause,
+    });
+
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
     cwd: string,
   ) {
-    const handle = yield* registry.resolve({ cwd }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new GitManagerError({
-            operation,
-            cwd,
-            detail: "Failed to resolve the VCS driver for this Git workflow.",
-            cause,
-          }),
-      ),
-    );
+    const handle = yield* registry
+      .resolve({ cwd })
+      .pipe(Effect.mapError(workflowError(operation, cwd)));
+    if (handle.kind !== "git") {
+      return yield* new GitManagerError({
+        operation,
+        cwd,
+        detail: "This action requires a Git checkout.",
+      });
+    }
     return handle;
   });
 
@@ -206,60 +216,18 @@ export const make = Effect.gen(function* () {
     operation: string,
     cwd: string,
   ) {
-    const handle = yield* registry.resolve({ cwd }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new GitCommandError({
-            operation,
-            command: "vcs-route",
-            cwd,
-            detail: "Failed to resolve the VCS driver for this Git command.",
-            cause,
-          }),
-      ),
-    );
-    return handle;
-  });
-
-  const detectGitRepositoryForStatus = Effect.fn("GitWorkflowService.detectGitRepositoryForStatus")(
-    function* (operation: string, cwd: string) {
-      const handle = yield* registry.detect({ cwd }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new GitManagerError({
-              operation,
-              cwd,
-              detail: "Failed to detect a VCS repository for this Git workflow.",
-              cause,
-            }),
-        ),
-      );
-      if (!handle) {
-        return false;
-      }
-      return true;
-    },
-  );
-
-  const detectGitRepositoryForCommand = Effect.fn(
-    "GitWorkflowService.detectGitRepositoryForCommand",
-  )(function* (operation: string, cwd: string) {
-    const handle = yield* registry.detect({ cwd }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new GitCommandError({
-            operation,
-            command: "vcs-route",
-            cwd,
-            detail: "Failed to detect a VCS repository for this Git command.",
-            cause,
-          }),
-      ),
-    );
-    if (!handle) {
-      return false;
+    const handle = yield* registry
+      .resolve({ cwd })
+      .pipe(Effect.mapError(commandError(operation, cwd)));
+    if (handle.kind !== "git") {
+      return yield* new GitCommandError({
+        operation,
+        cwd,
+        command: "vcs-route",
+        detail: "This action requires a Git checkout.",
+      });
     }
-    return true;
+    return handle;
   });
 
   const routeGitManager =
@@ -318,26 +286,27 @@ export const make = Effect.gen(function* () {
             Effect.map((result) => result.stdout.trim().length > 0),
           );
     }),
-    status: Effect.fn("GitWorkflowService.status")(function (input) {
-      return detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? gitManager.status(input) : Effect.succeed(nonRepositoryStatus()),
-        ),
-      );
+    status: Effect.fn("GitWorkflowService.status")(function* (input) {
+      const onError = workflowError("status", input.cwd);
+      const handle = yield* registry.detect(input).pipe(Effect.mapError(onError));
+      if (!handle) return nonRepositoryStatus();
+      return yield* handle.arc
+        ? handle.arc.status(input).pipe(Effect.mapError(onError))
+        : gitManager.status(input);
     }),
-    localStatus: Effect.fn("GitWorkflowService.localStatus")(function (input) {
-      return detectGitRepositoryForStatus("GitWorkflowService.localStatus", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository
-            ? gitManager.localStatus(input)
-            : Effect.succeed(nonRepositoryLocalStatus()),
-        ),
-      );
+    localStatus: Effect.fn("GitWorkflowService.localStatus")(function* (input) {
+      const onError = workflowError("localStatus", input.cwd);
+      const handle = yield* registry.detect(input).pipe(Effect.mapError(onError));
+      if (!handle) return nonRepositoryLocalStatus();
+      return yield* handle.arc
+        ? handle.arc.localStatus(input).pipe(Effect.mapError(onError))
+        : gitManager.localStatus(input);
     }),
     currentBranch: Effect.fn("GitWorkflowService.currentBranch")(function* (cwd) {
-      if (!(yield* detectGitRepositoryForStatus("GitWorkflowService.currentBranch", cwd))) {
-        return null;
-      }
+      const onError = workflowError("currentBranch", cwd);
+      const handle = yield* registry.detect({ cwd }).pipe(Effect.mapError(onError));
+      if (!handle) return null;
+      if (handle.arc) return yield* handle.arc.currentBranch(cwd).pipe(Effect.mapError(onError));
       const result = yield* git.execute({
         operation: "GitWorkflowService.currentBranch",
         cwd,
@@ -360,12 +329,13 @@ export const make = Effect.gen(function* () {
         detail: "Failed to read the checked-out branch.",
       });
     }),
-    remoteStatus: Effect.fn("GitWorkflowService.remoteStatus")(function (input, options) {
-      return detectGitRepositoryForStatus("GitWorkflowService.remoteStatus", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? gitManager.remoteStatus(input, options) : Effect.succeed(null),
-        ),
-      );
+    remoteStatus: Effect.fn("GitWorkflowService.remoteStatus")(function* (input, options) {
+      const onError = workflowError("remoteStatus", input.cwd);
+      const handle = yield* registry.detect(input).pipe(Effect.mapError(onError));
+      if (!handle) return null;
+      return yield* handle.arc
+        ? handle.arc.remoteStatus(input).pipe(Effect.mapError(onError))
+        : gitManager.remoteStatus(input, options);
     }),
     invalidateLocalStatus: gitManager.invalidateLocalStatus,
     invalidateRemoteStatus: gitManager.invalidateRemoteStatus,
@@ -403,12 +373,13 @@ export const make = Effect.gen(function* () {
         );
       },
     ),
-    listRefs: Effect.fn("GitWorkflowService.listRefs")(function (input) {
-      return detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
-        ),
-      );
+    listRefs: Effect.fn("GitWorkflowService.listRefs")(function* (input) {
+      const onError = commandError("listRefs", input.cwd);
+      const handle = yield* registry.detect(input).pipe(Effect.mapError(onError));
+      if (!handle) return nonRepositoryListRefs();
+      return yield* handle.arc
+        ? handle.arc.listRefs(input).pipe(Effect.mapError(onError))
+        : git.listRefs(input);
     }),
     createWorktree: Effect.fn("GitWorkflowService.createWorktree")(function (input, options) {
       return ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(

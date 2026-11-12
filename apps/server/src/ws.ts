@@ -42,6 +42,8 @@ import {
   type OrchestrationV2Command,
   type GitActionProgressEvent,
   type GitManagerServiceError,
+  type ArcWorkflowError,
+  VcsUnsupportedOperationError,
   type MessageId,
   type AcpRegistryImportSessionInput,
   type AcpRegistryDeleteSessionInput,
@@ -212,6 +214,7 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import * as ArcWorkflowService from "./arc/ArcWorkflowService.ts";
 import { refreshPushedPullRequests } from "./git/refreshPushedPullRequests.ts";
 import { linkCreatedPullRequest } from "./git/linkCreatedPullRequest.ts";
 import * as ReviewService from "./review/ReviewService.ts";
@@ -1492,6 +1495,7 @@ export const layerWsRpc = (
       const remoteOpenTargets = yield* RemoteOpenTargets.RemoteOpenTargets;
       const directEndpoints = yield* DirectEndpoints.DirectEndpoints;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+      const arcWorkflow = yield* Effect.serviceOption(ArcWorkflowService.ArcWorkflowService);
       const review = yield* ReviewService.ReviewService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
@@ -1509,6 +1513,7 @@ export const layerWsRpc = (
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const npmRelease = yield* NpmRelease.NpmRelease;
       const config = yield* ServerConfig.ServerConfig;
+      const profileHomeDirectory = (yield* Path.Path).join(config.stateDir, "profiles");
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const storageCleanup = yield* StorageCleanup.StorageCleanup;
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
@@ -1937,6 +1942,7 @@ export const layerWsRpc = (
           auth,
           cwd: config.cwd,
           keybindingsConfigPath: config.keybindingsConfigPath,
+          profileHomeDirectory,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers,
@@ -2889,6 +2895,7 @@ export const layerWsRpc = (
               projectService
                 .create({
                   commandId: CommandId.make(`project-clone-create:${project.projectId}`),
+                  ...(input.profile === undefined ? {} : { profile: input.profile }),
                   projectId: project.projectId,
                   title: project.title,
                   workspaceRoot: project.workspaceRoot,
@@ -3202,6 +3209,32 @@ export const layerWsRpc = (
                 }),
               ),
           ),
+        [WS_METHODS.arcRunAction]: (input) =>
+          Option.isNone(arcWorkflow)
+            ? Stream.fail(
+                new VcsUnsupportedOperationError({
+                  operation: "arc.runAction",
+                  kind: "arc",
+                  detail: "Arc actions are unavailable in this server configuration.",
+                }),
+              )
+            : Stream.callback<GitActionProgressEvent, ArcWorkflowError>((queue) =>
+                arcWorkflow.value
+                  .runAction(input, {
+                    progressReporter: {
+                      publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
+                    },
+                  })
+                  .pipe(
+                    Effect.matchCauseEffect({
+                      onFailure: (cause) => Queue.failCause(queue, cause),
+                      onSuccess: () =>
+                        refreshGitStatus(input.cwd).pipe(
+                          Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
+                        ),
+                    }),
+                  ),
+              ),
         [WS_METHODS.gitResolvePullRequest]: (input) => gitWorkflow.resolvePullRequest(input),
         [WS_METHODS.gitPreparePullRequestThread]: (input) =>
           gitWorkflow

@@ -117,14 +117,18 @@ export function buildMenuItems(
   const hasChanges = gitStatus.hasWorkingTreeChanges;
   const hasOpenPr = gitStatus.pr?.state === "open";
   const isBehind = gitStatus.behindCount > 0;
-  const hasDefaultBranchDelta = (gitStatus.aheadOfDefaultCount ?? gitStatus.aheadCount) > 0;
+  const trackingCountsUnknown = gitStatus.trackingCountsKnown === false;
+  const hasDefaultBranchDelta = trackingCountsUnknown
+    ? !gitStatus.isDefaultRef
+    : (gitStatus.aheadOfDefaultCount ?? gitStatus.aheadCount) > 0;
   const canPushWithoutUpstream = hasPrimaryRemote && !gitStatus.hasUpstream;
   const canCommit = !isBusy && hasChanges;
   const canPush =
     !isBusy &&
     hasBranch &&
+    !hasChanges &&
     !isBehind &&
-    gitStatus.aheadCount > 0 &&
+    (trackingCountsUnknown ? !gitStatus.isDefaultRef : gitStatus.aheadCount > 0) &&
     (gitStatus.hasUpstream || canPushWithoutUpstream);
   const canCreatePr =
     !isBusy &&
@@ -209,8 +213,11 @@ export function resolveQuickAction(
   const hasBranch = gitStatus.refName !== null;
   const hasChanges = gitStatus.hasWorkingTreeChanges;
   const hasOpenPr = gitStatus.pr?.state === "open";
-  const isAhead = gitStatus.aheadCount > 0;
-  const hasDefaultBranchDelta = (gitStatus.aheadOfDefaultCount ?? gitStatus.aheadCount) > 0;
+  const trackingCountsUnknown = gitStatus.trackingCountsKnown === false;
+  const isAhead = trackingCountsUnknown ? !isDefaultRef : gitStatus.aheadCount > 0;
+  const hasDefaultBranchDelta = trackingCountsUnknown
+    ? !isDefaultRef
+    : (gitStatus.aheadOfDefaultCount ?? gitStatus.aheadCount) > 0;
   const isBehind = gitStatus.behindCount > 0;
   const isDiverged = isAhead && isBehind;
   const terminology = changeRequestTerminologyFor(gitStatus);

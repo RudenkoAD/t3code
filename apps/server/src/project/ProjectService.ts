@@ -12,6 +12,7 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -270,13 +271,31 @@ export const make = Effect.gen(function* () {
         now,
       });
       if (Result.isSuccess(planned)) {
-        const { receipt } = yield* eventSink.commitProjectCommand({
+        const persist = eventSink.commitProjectCommand({
           commandId: command.commandId,
           projectId,
           commandType: command.type,
           acceptedAt: now,
           event: planned.success,
         });
+        const profile = command.type === "project.create" ? command.profile : undefined;
+        if (profile === undefined) return (yield* persist).receipt;
+
+        // Install the profile before the project can admit its first turn.
+        const { receipt } = yield* Effect.acquireUseRelease(
+          Effect.gen(function* () {
+            const previous = (yield* serverSettings.getSettings).projectProfiles[projectId];
+            yield* serverSettings.updateSettings({ projectProfiles: { [projectId]: profile } });
+            return previous;
+          }),
+          () => Effect.uninterruptible(persist),
+          (previous, exit) =>
+            Exit.isSuccess(exit) && exit.value.committed
+              ? Effect.void
+              : serverSettings
+                  .updateSettings({ projectProfiles: { [projectId]: previous ?? null } })
+                  .pipe(Effect.ignoreCause({ log: true })),
+        );
         return receipt;
       }
       return yield* eventSink.commitRejectedProjectCommand({
@@ -388,6 +407,7 @@ export const make = Effect.gen(function* () {
         commandId: input.commandId,
         projectId: input.projectId,
         title: input.title,
+        ...(input.profile === undefined ? {} : { profile: input.profile }),
         workspaceRoot,
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
       });
@@ -527,15 +547,20 @@ export const make = Effect.gen(function* () {
 
   // Best-effort cleanup releases disabled instances kept alive by overrides; crashes have no replay to revisit deletion.
   const clearProjectSettingsOverrides = (projectId: ProjectId) =>
-    serverSettings.updateSettings({ projectSettingsOverrides: { [projectId]: null } }).pipe(
-      Effect.asVoid,
-      Effect.catchCause((cause) =>
-        Effect.logWarning(
-          `Failed to clear settings overrides for deleted project ${projectId}.`,
-          cause,
+    serverSettings
+      .updateSettings({
+        projectSettingsOverrides: { [projectId]: null },
+        projectProfiles: { [projectId]: null },
+      })
+      .pipe(
+        Effect.asVoid,
+        Effect.catchCause((cause) =>
+          Effect.logWarning(
+            `Failed to clear settings overrides for deleted project ${projectId}.`,
+            cause,
+          ),
         ),
-      ),
-    );
+      );
 
   const deleteProject: ProjectService["Service"]["delete"] = Effect.fn("ProjectService.delete")(
     function* (input) {

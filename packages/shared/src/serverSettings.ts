@@ -401,10 +401,13 @@ export function applyServerSettingsPatch(
     usageLimitSources: usageLimitSourcesPatch,
     textGenerators: textGeneratorsPatch,
     secretProviders: secretProvidersPatch,
+    profileProviderSettings: profileProviderSettingsPatch,
+    profileToolAccess: profileToolAccessPatch,
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
+    projectProfiles: projectProfilesPatch,
     projectSettingsOverrides: projectSettingsOverridesPatch,
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
     projectAutoPullOverrides: _legacyAutoPull,
@@ -541,6 +544,33 @@ export function applyServerSettingsPatch(
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),
+    ...(profileProviderSettingsPatch !== undefined
+      ? {
+          profileProviderSettings: {
+            work: {
+              ...current.profileProviderSettings.work,
+              ...profileProviderSettingsPatch.work,
+            },
+            personal: {
+              ...current.profileProviderSettings.personal,
+              ...profileProviderSettingsPatch.personal,
+            },
+          },
+        }
+      : {}),
+    ...(profileToolAccessPatch !== undefined
+      ? {
+          profileToolAccess: {
+            ...current.profileToolAccess,
+            ...Object.fromEntries(
+              Object.entries(profileToolAccessPatch).map(([profile, access]) => [
+                profile,
+                access ?? {},
+              ]),
+            ),
+          },
+        }
+      : {}),
     ...(patch.worktreesDirectory !== undefined &&
     patch.worktreesDirectory !== current.worktreesDirectory
       ? {
@@ -584,6 +614,9 @@ export function applyServerSettingsPatch(
             ),
           },
         }
+      : {}),
+    ...(projectProfilesPatch !== undefined
+      ? { projectProfiles: mergeSettingsEntries(current.projectProfiles, projectProfilesPatch) }
       : {}),
     ...(projectSettingsOverridesPatch !== undefined
       ? {

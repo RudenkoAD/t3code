@@ -61,6 +61,7 @@ const METHOD_FEATURES: Readonly<Record<string, (payload: Payload) => FeatureUsag
   [WS_METHODS.vcsCreateWorktree]: () => ({ feature: "worktree.create" }),
   [WS_METHODS.gitRunStackedAction]: (payload) =>
     use("git.stacked_action", literal(payload, "action")),
+  [WS_METHODS.arcRunAction]: (payload) => use("arc.stacked_action", literal(payload, "action")),
   [WS_METHODS.pullRequestsRunAction]: (payload) =>
     use("pull_request.action", literal(payload, "action")),
   [WS_METHODS.pullRequestsSubmitReview]: () => ({ feature: "pull_request.review" }),

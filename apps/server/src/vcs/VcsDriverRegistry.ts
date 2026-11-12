@@ -10,6 +10,7 @@ import * as Path from "effect/Path";
 import type { VcsDriverKind, VcsError, VcsRepositoryIdentity } from "@t3tools/contracts";
 import { VcsUnsupportedOperationError } from "@t3tools/contracts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import * as ArcVcsDriver from "./ArcVcsDriver.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 
@@ -23,6 +24,7 @@ export interface VcsDriverResolveInput {
 }
 
 export interface VcsDriverHandle {
+  readonly arc?: ArcVcsDriver.ArcVcsDriver["Service"];
   readonly kind: VcsDriverKind;
   readonly repository: VcsRepositoryIdentity;
   readonly driver: VcsDriver.VcsDriver["Service"];
@@ -62,8 +64,10 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const projectConfig = yield* VcsProjectConfig.VcsProjectConfig;
   const git = yield* GitVcsDriver.makeVcsDriver;
+  const arc = yield* ArcVcsDriver.make;
   const drivers: Partial<Record<VcsDriverKind, VcsDriver.VcsDriver["Service"]>> = {
     git,
+    arc,
   };
 
   const get: VcsDriverRegistry["Service"]["get"] = (kind) => {
@@ -93,6 +97,7 @@ export const make = Effect.gen(function* () {
       kind,
       repository,
       driver,
+      ...(kind === "arc" ? { arc } : {}),
     } satisfies VcsDriverHandle;
   });
 
@@ -107,7 +112,8 @@ export const make = Effect.gen(function* () {
       return yield* detectWithDriver(requestedKind, driver, input.cwd);
     }
 
-    return yield* detectWithDriver("git", git, input.cwd);
+    const arcRepository = yield* detectWithDriver("arc", arc, input.cwd);
+    return arcRepository ?? (yield* detectWithDriver("git", git, input.cwd));
   });
 
   // Symlinks can put cwd outside root; then inspect cwd alone.

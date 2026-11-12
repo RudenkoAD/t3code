@@ -232,6 +232,49 @@ it.effect("hands off from a native provider thread after its session detaches", 
   ),
 );
 
+it.effect("starts a fresh native session when a project changes profile", () =>
+  Effect.gen(function* () {
+    const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
+    const personal = ProviderInstanceId.make("t3profile_personal_codex");
+    const work = ProviderInstanceId.make("t3profile_work_codex");
+    const base = deadNativeThreadProjection("stopped");
+    const current: OrchestrationV2ThreadProjection = {
+      ...base,
+      thread: {
+        ...base.thread,
+        modelSelection: { instanceId: personal, model: "gpt-5.1-codex" },
+        activeProviderThreadId: base.providerThreads[0]!.id,
+      },
+      providerSessions: [
+        {
+          ...base.providerSessions[0]!,
+          providerInstanceId: personal,
+          status: "ready",
+        },
+      ],
+      providerThreads: [
+        {
+          ...base.providerThreads[0]!,
+          providerInstanceId: personal,
+        },
+      ],
+    };
+    const plan = yield* service.plan({
+      projection: current,
+      targetModelSelection: { instanceId: work, model: "gpt-5.1-codex" },
+    });
+    assert.equal(plan.transition.type, "create_with_handoff");
+    assert.deepEqual(plan.releaseProviderSessionIds, [current.providerSessions[0]!.id]);
+  }).pipe(
+    Effect.provide(
+      layerTest({
+        t3profile_personal_codex: { continuationKey: "codex:home:/t3/profiles/personal/codex" },
+        t3profile_work_codex: { continuationKey: "codex:home:/t3/profiles/work/codex" },
+      }),
+    ),
+  ),
+);
+
 it.effect.each(["stopped", "error"] as const)(
   "applies a model change on next turn when a %s session negotiated model switching",
   (deadStatus) =>

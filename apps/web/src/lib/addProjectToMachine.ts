@@ -8,6 +8,7 @@ import type {
   EnvironmentId,
   ProjectCloneSnapshot,
   ProjectId,
+  ProjectProfile,
   ScopedProjectRef,
 } from "@t3tools/contracts";
 import { create } from "zustand";
@@ -35,6 +36,7 @@ export interface AddProjectToMachineInput {
   readonly subdirectory: string;
   readonly target: { readonly environmentId: EnvironmentId; readonly label: string };
   readonly projectId: ProjectId;
+  readonly profile: ProjectProfile;
   readonly title: string;
   readonly remoteUrl: string;
   readonly destinationPath: string;
@@ -135,6 +137,7 @@ export async function addProjectToMachine(input: AddProjectToMachineInput): Prom
         createdAt: new Date().toISOString(),
         remoteUrl: input.remoteUrl,
         destinationPath: input.destinationPath,
+        profile: input.profile,
       },
     },
     { label: "Add project to machine", reportFailure: false },

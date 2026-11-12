@@ -217,6 +217,8 @@ const VcsStatusChangeRequest = Schema.Struct({
 });
 
 const VcsStatusLocalShape = {
+  /** Repository driver, independent of the host service behind its remotes. */
+  vcsKind: Schema.optional(VcsDriverKind),
   isRepo: Schema.Boolean,
   sourceControlProvider: Schema.optional(SourceControlProviderInfo),
   hasPrimaryRemote: Schema.Boolean,
@@ -227,6 +229,7 @@ const VcsStatusLocalShape = {
     // Absolute worktree root on the environment that every files[].path is
     // relative to. Absent when the server could not resolve it.
     rootPath: Schema.optional(GitFilePath),
+    lineCountsKnown: Schema.optional(Schema.Boolean),
     files: Schema.Array(
       Schema.Struct({
         path: GitFilePath,
@@ -248,6 +251,7 @@ const VcsStatusLocalShape = {
 
 const VcsStatusRemoteShape = {
   hasUpstream: Schema.Boolean,
+  trackingCountsKnown: Schema.optional(Schema.Boolean),
   aheadCount: NonNegativeInt,
   behindCount: NonNegativeInt,
   aheadOfDefaultCount: Schema.optional(NonNegativeInt),

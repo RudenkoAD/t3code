@@ -130,6 +130,7 @@ import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import * as ArcWorkflowService from "./arc/ArcWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as PullRequestReadCache from "./pullRequest/PullRequestReadCache.ts";
@@ -440,6 +441,11 @@ const layerGitWorkflow = GitWorkflowService.layer.pipe(
   Layer.provideMerge(layerGit),
 );
 
+const layerArcWorkflow = ArcWorkflowService.layer.pipe(
+  Layer.provideMerge(layerVcsDriverRegistry),
+  Layer.provide(VcsProcess.layer),
+);
+
 const layerSourceControlRepositoryService = SourceControlRepositoryService.layer.pipe(
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(layerSourceControlProviderRegistry),
@@ -465,6 +471,7 @@ const layerVcs = Layer.empty.pipe(
   Layer.provideMerge(layerVcsDriverRegistry),
   Layer.provideMerge(VcsProvisioningService.layer.pipe(Layer.provide(layerVcsDriverRegistry))),
   Layer.provideMerge(layerGitWorkflow),
+  Layer.provideMerge(layerArcWorkflow),
   Layer.provideMerge(layerReview),
   Layer.provideMerge(layerSourceControlRepositoryService),
   Layer.provideMerge(

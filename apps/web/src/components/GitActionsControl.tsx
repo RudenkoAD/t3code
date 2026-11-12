@@ -1048,15 +1048,20 @@ export default function GitActionsControl({
   const changeRequestTerminology = sourceControlPresentation.terminology;
   const SourceControlIcon = sourceControlPresentation.Icon;
   const isRepo = gitStatus?.isRepo ?? true;
-  const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
+  // Arc publishes through the Arc CLI rather than a Git remote.
+  const hasPrimaryRemote = gitStatus?.vcsKind === "arc" || (gitStatus?.hasPrimaryRemote ?? false);
   const gitStatusForActions = gitStatus;
+  const isArcVcs = gitStatusForActions?.vcsKind === "arc";
+  const canCreateFeatureBranch = gitStatusForActions?.vcsKind !== "arc";
   const resolvedChangesTotals = resolveChangesTotals(gitStatusForActions);
   const changesTotals = resolvedChangesTotals ?? { insertions: 0, deletions: 0 };
-  const changesBaseLabel = resolvedChangesTotals
-    ? resolvedChangesTotals.baseRef === null
-      ? "Uncommitted"
-      : `vs ${resolvedChangesTotals.baseRef}`
-    : null;
+  const lineCountsKnown = gitStatusForActions?.workingTree.lineCountsKnown !== false;
+  const changesBaseLabel =
+    lineCountsKnown && resolvedChangesTotals
+      ? resolvedChangesTotals.baseRef === null
+        ? "Uncommitted"
+        : `vs ${resolvedChangesTotals.baseRef}`
+      : null;
 
   const allFiles = gitStatusForActions?.workingTree.files ?? [];
   // Changed-file paths are repository-relative, so they must resolve against
@@ -1126,8 +1131,7 @@ export default function GitActionsControl({
     gitActionProgress === null &&
     !gitStatusError &&
     quickAction.disabled &&
-    !changesTotals.insertions &&
-    !changesTotals.deletions;
+    !gitStatusForActions?.hasWorkingTreeChanges;
   const pendingDefaultBranchActionCopy = pendingDefaultBranchAction
     ? resolveDefaultBranchActionDialogCopy({
         action: pendingDefaultBranchAction.action,
@@ -1137,12 +1141,13 @@ export default function GitActionsControl({
       })
     : null;
   // Keep enabled until live status loads; the server rejects stale requests.
-  const featureBranchUnavailableReason = pendingDefaultBranchAction
-    ? resolveFeatureBranchUnavailableReason({
-        branchName: pendingDefaultBranchAction.branchName,
-        hasWorkingTreeChanges: gitStatus?.hasWorkingTreeChanges ?? true,
-      })
-    : null;
+  const featureBranchUnavailableReason =
+    pendingDefaultBranchAction && canCreateFeatureBranch
+      ? resolveFeatureBranchUnavailableReason({
+          branchName: pendingDefaultBranchAction.branchName,
+          hasWorkingTreeChanges: gitStatus?.hasWorkingTreeChanges ?? true,
+        })
+      : null;
 
   useAtomMount(
     vcsStatusRevalidation(
@@ -1209,6 +1214,7 @@ export default function GitActionsControl({
     const result = await runImmediateGitAction.run({
       actionId,
       action,
+      ...(actionStatus?.vcsKind ? { vcsKind: actionStatus.vcsKind } : {}),
       ...(commitMessage ? { commitMessage } : {}),
       ...(featureBranch ? { featureBranch } : {}),
       ...(filePaths ? { filePaths } : {}),
@@ -1250,7 +1256,10 @@ export default function GitActionsControl({
 
   const continuePendingDefaultBranchAction = (featureBranch: boolean) => {
     if (!pendingDefaultBranchAction || !canWriteSourceControl) return;
-    if (featureBranch && (!canChangeThreadBranch || featureBranchUnavailableReason !== null))
+    if (
+      featureBranch &&
+      (!canCreateFeatureBranch || !canChangeThreadBranch || featureBranchUnavailableReason !== null)
+    )
       return;
     const { action, commitMessage, onConfirmed, filePaths } = pendingDefaultBranchAction;
     setPendingDefaultBranchAction(null);
@@ -1265,7 +1274,7 @@ export default function GitActionsControl({
   };
 
   const runDialogActionOnNewBranch = () => {
-    if (!isCommitDialogOpen) return;
+    if (!isCommitDialogOpen || !canCreateFeatureBranch) return;
     const commitMessage = dialogCommitMessage.trim();
 
     setIsCommitDialogOpen(false);
@@ -1518,7 +1527,7 @@ export default function GitActionsControl({
       ) : quietEmptyDraft || (compact && !gitActionProgress && !visibleInlineSuccess) ? null : (
         <div
           role="group"
-          aria-label="Git actions"
+          aria-label={gitStatusForActions?.vcsKind === "arc" ? "Arc actions" : "Git actions"}
           ref={panelAnchorRef}
           onPointerEnter={hasGitMenuContent ? undefined : refreshStatusForEmptyMenu}
           onFocus={hasGitMenuContent ? undefined : refreshStatusForEmptyMenu}
@@ -1622,7 +1631,7 @@ export default function GitActionsControl({
                 <MenuTrigger
                   render={
                     <ThreadDetailsControl
-                      aria-label="Git action options"
+                      aria-label={isArcVcs ? "Arc action options" : "Git action options"}
                       size="sm"
                       variant="ghost"
                       part="secondary"
@@ -1671,26 +1680,28 @@ export default function GitActionsControl({
                 </TooltipPopup>
               </Tooltip>
             ) : null}
-            <span className="ml-auto flex shrink-0 items-baseline gap-2 ps-2 font-mono tabular-nums">
-              <span
-                className={
-                  changesTotals.insertions
-                    ? "text-diff-addition-foreground"
-                    : "text-muted-foreground"
-                }
-              >
-                +{formatDiffCount(changesTotals.insertions)}
+            {lineCountsKnown ? (
+              <span className="ml-auto flex shrink-0 items-baseline gap-2 ps-2 font-mono tabular-nums">
+                <span
+                  className={
+                    changesTotals.insertions
+                      ? "text-diff-addition-foreground"
+                      : "text-muted-foreground"
+                  }
+                >
+                  +{formatDiffCount(changesTotals.insertions)}
+                </span>
+                <span
+                  className={
+                    changesTotals.deletions
+                      ? "text-diff-deletion-foreground"
+                      : "text-muted-foreground"
+                  }
+                >
+                  -{formatDiffCount(changesTotals.deletions)}
+                </span>
               </span>
-              <span
-                className={
-                  changesTotals.deletions
-                    ? "text-diff-deletion-foreground"
-                    : "text-muted-foreground"
-                }
-              >
-                -{formatDiffCount(changesTotals.deletions)}
-              </span>
-            </span>
+            ) : null}
           </span>
         </ThreadDetailsControl>
       ) : null}
@@ -1852,14 +1863,16 @@ export default function GitActionsControl({
             >
               Cancel
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!canChangeThreadBranch || noneSelected}
-              onClick={runDialogActionOnNewBranch}
-            >
-              Commit on new branch
-            </Button>
+            {canCreateFeatureBranch ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canChangeThreadBranch || noneSelected}
+                onClick={runDialogActionOnNewBranch}
+              >
+                Commit on new branch
+              </Button>
+            ) : null}
             <Button
               size="sm"
               disabled={!canWriteSourceControl || noneSelected}
@@ -1916,14 +1929,16 @@ export default function GitActionsControl({
             >
               {pendingDefaultBranchActionCopy?.continueLabel ?? "Continue"}
             </Button>
-            <Button
-              className="w-full max-w-full sm:w-auto"
-              size="sm-multiline"
-              onClick={() => continuePendingDefaultBranchAction(true)}
-              disabled={!canChangeThreadBranch || featureBranchUnavailableReason !== null}
-            >
-              Check out feature branch & continue
-            </Button>
+            {canCreateFeatureBranch ? (
+              <Button
+                className="w-full max-w-full sm:w-auto"
+                size="sm-multiline"
+                onClick={() => continuePendingDefaultBranchAction(true)}
+                disabled={!canChangeThreadBranch || featureBranchUnavailableReason !== null}
+              >
+                Check out feature branch & continue
+              </Button>
+            ) : null}
           </DialogFooter>
         </DialogPopup>
       </Dialog>

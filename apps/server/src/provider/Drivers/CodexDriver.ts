@@ -1,4 +1,9 @@
-import { CodexSettings, ProviderDriverKind } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  profileProviderInstanceBaseId,
+} from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import type * as Signature from "effect/crypto/Signature";
@@ -58,6 +63,7 @@ import * as CodexManagedTokenBroker from "../CodexManagedTokenBroker.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { profileProviderHomeDirectory } from "../profileProviderHome.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -137,19 +143,36 @@ export const CodexDriver: ProviderDriver<
     enabled,
     config,
   }) {
-    if (config.setupMode === "managed")
+    const pathService = yield* Path.Path;
+    const { stateDir } = yield* ServerConfig.ServerConfig;
+    const parsedProfileInstance = profileProviderInstanceBaseId(instanceId);
+    const profile =
+      parsedProfileInstance?.baseId === ProviderInstanceId.make("codex")
+        ? parsedProfileInstance.profile
+        : undefined;
+    const runtimeConfig = profile
+      ? {
+          ...config,
+          homePath: profileProviderHomeDirectory(
+            pathService,
+            pathService.join(stateDir, "profiles"),
+            profile,
+            "codex",
+          ),
+        }
+      : config;
+    if (runtimeConfig.setupMode === "managed")
       return yield* makeManagedCodexProvider({
         instanceId,
         displayName,
         accentColor,
         environment,
         enabled,
-        config,
+        config: runtimeConfig,
       });
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
     const fileSystem = yield* FileSystem.FileSystem;
-    const pathService = yield* Path.Path;
     const httpClient = yield* HttpClient.HttpClient;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const installation = yield* CodexInstallation.CodexInstallation;
@@ -161,9 +184,11 @@ export const CodexDriver: ProviderDriver<
     );
     const environmentHome = processEnv.CODEX_HOME;
     const homeLayout = yield* resolveCodexHomeLayout(
-      !config.homePath.trim() && !config.shadowHomePath.trim() && environmentHome?.trim()
-        ? { ...config, homePath: environmentHome }
-        : config,
+      !runtimeConfig.homePath.trim() &&
+        !runtimeConfig.shadowHomePath.trim() &&
+        environmentHome?.trim()
+        ? { ...runtimeConfig, homePath: environmentHome }
+        : runtimeConfig,
     );
     const continuationIdentity = codexContinuationIdentity(homeLayout);
     const stampIdentity = withInstanceIdentity({
@@ -187,7 +212,7 @@ export const CodexDriver: ProviderDriver<
     const effectiveConfig = {
       ...config,
       enabled,
-      binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
+      binaryPath: expandHomePath(runtimeConfig.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: homeLayout.effectiveHomePath ?? "",
     } satisfies CodexSettings;
     const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
@@ -211,7 +236,7 @@ export const CodexDriver: ProviderDriver<
         accentColor,
         environment,
         enabled,
-        config,
+        config: runtimeConfig,
       },
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),

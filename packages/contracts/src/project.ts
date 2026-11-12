@@ -176,7 +176,11 @@ export const ProjectSnapshot = Schema.Struct({
 });
 export type ProjectSnapshot = typeof ProjectSnapshot.Type;
 
+export const ProjectProfile = Schema.Literals(["work", "personal"]);
+export type ProjectProfile = typeof ProjectProfile.Type;
+
 export const ProjectCreatePayload = Schema.Struct({
+  profile: Schema.optionalKey(ProjectProfile),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
   createWorkspaceRootIfMissing: Schema.optional(Schema.Boolean),
@@ -525,6 +529,7 @@ export const ProjectEnsureScratchResult = Schema.Struct({
 export type ProjectEnsureScratchResult = typeof ProjectEnsureScratchResult.Type;
 
 export const ProjectCreateNewInput = Schema.Struct({
+  profile: Schema.optionalKey(ProjectProfile),
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
 });
 export type ProjectCreateNewInput = typeof ProjectCreateNewInput.Type;

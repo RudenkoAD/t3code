@@ -1,6 +1,7 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
+  resolveProjectProfile,
   ProviderDriverKind,
   ProviderInstanceId,
   SecretProviderId,
@@ -32,6 +33,21 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
+
+it("keeps profile assignments independent of project overrides and other projects", () => {
+  const a = ProjectId.make("project-a");
+  const b = ProjectId.make("project-b");
+  const legacy = decodeServerSettings({});
+  expect(resolveProjectProfile(legacy, a)).toBe("personal");
+  const assigned = applyServerSettingsPatch(legacy, {
+    projectProfiles: { [a]: "work", [b]: "work" },
+  });
+  const reset = applyServerSettingsPatch(assigned, { projectSettingsOverrides: { [a]: null } });
+  expect(resolveProjectProfile(reset, a)).toBe("work");
+  const removed = applyServerSettingsPatch(reset, { projectProfiles: { [b]: null } });
+  expect(removed.projectProfiles).toEqual({ [a]: "work" });
+  expect(resolveProjectProfile(removed, b)).toBe("personal");
+});
 
 describe("fallbackTextGenerationModelSelection", () => {
   it("uses Big Pickle when only OpenCode is enabled", () => {
@@ -482,7 +498,7 @@ describe("serverSettings helpers", () => {
     );
   });
 
-  it("keeps a writer on an instance the project turned on while the machine has it off", () => {
+  it("does not expose a global custom writer instance inside a profile project", () => {
     const instanceId = ProviderInstanceId.make("codex_writer");
     const projectId = ProjectId.make("project-a");
     const sourceControlWriterModelSelection = createModelSelection(instanceId, "gpt-5.4-mini");
@@ -512,7 +528,7 @@ describe("serverSettings helpers", () => {
     } satisfies ServerProvider;
 
     expect(resolveSourceControlWriterModelSelection(settings, [provider], projectId)).toBe(
-      sourceControlWriterModelSelection,
+      settings.textGenerationModelSelection,
     );
     expect(resolveSourceControlWriterModelSelection(settings, [provider], null)).toBe(
       settings.textGenerationModelSelection,

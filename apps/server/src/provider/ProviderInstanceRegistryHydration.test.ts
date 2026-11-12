@@ -97,6 +97,70 @@ describe("deriveProviderInstanceConfigMap", () => {
 
     expect(merged[instanceId]).toBe(settings.providerInstances[instanceId]);
   });
+
+  it("registers separate built-in Codex and Claude providers for each profile", () => {
+    const workCodexId = ProviderInstanceId.make("t3profile_work_codex");
+    const personalCodexId = ProviderInstanceId.make("t3profile_personal_codex");
+    const workClaudeId = ProviderInstanceId.make("t3profile_work_claudeAgent");
+    const personalClaudeId = ProviderInstanceId.make("t3profile_personal_claudeAgent");
+    const settings = settingsWith({
+      profileProviderSettings: {
+        ...DEFAULT_SERVER_SETTINGS.profileProviderSettings,
+        work: { codexEnabled: false, claudeEnabled: true },
+      },
+    });
+
+    const merged = deriveProviderInstanceConfigMap(settings);
+
+    expect(merged[workCodexId]).toMatchObject({
+      driver: ProviderDriverKind.make("codex"),
+      enabled: false,
+    });
+    expect(merged[personalCodexId]).toMatchObject({
+      driver: ProviderDriverKind.make("codex"),
+      enabled: true,
+    });
+    expect(merged[workClaudeId]).toMatchObject({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      enabled: true,
+    });
+    expect(merged[personalClaudeId]).toMatchObject({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      enabled: true,
+    });
+  });
+
+  it("keeps legacy user instances named work_codex and personal_claudeAgent global", () => {
+    const legacyWorkCodex = ProviderInstanceId.make("work_codex");
+    const legacyPersonalClaude = ProviderInstanceId.make("personal_claudeAgent");
+    const settings = settingsWith({
+      providerInstances: {
+        [legacyWorkCodex]: {
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Legacy work Codex",
+          enabled: true,
+          config: { homePath: "/legacy/work" },
+        },
+        [legacyPersonalClaude]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          displayName: "Legacy personal Claude",
+          enabled: true,
+          config: { homePath: "/legacy/personal" },
+        },
+      },
+    });
+
+    const merged = deriveProviderInstanceConfigMap(settings);
+
+    expect(merged[legacyWorkCodex]).toEqual(settings.providerInstances[legacyWorkCodex]);
+    expect(merged[legacyPersonalClaude]).toEqual(settings.providerInstances[legacyPersonalClaude]);
+    expect(merged[ProviderInstanceId.make("t3profile_work_codex")]).toMatchObject({
+      driver: ProviderDriverKind.make("codex"),
+    });
+    expect(merged[ProviderInstanceId.make("t3profile_personal_claudeAgent")]).toMatchObject({
+      driver: ProviderDriverKind.make("claudeAgent"),
+    });
+  });
 });
 
 describe("seedDevReplayInstance", () => {

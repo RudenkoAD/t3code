@@ -128,4 +128,37 @@ describe("VcsDriverRegistry", () => {
       }).pipe(Effect.provide(makeDiskBackedLayer(repoDir, calls)));
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
+
+  it.effect(
+    "detects Arc repositories from their marker without spawning arc for personal folders",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const arcRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-arc-registry-" });
+        const resolvedArcRoot = yield* fs.realPath(arcRoot);
+        const projectDir = path.join(arcRoot, "quality", "offline", "project");
+        yield* fs.makeDirectory(projectDir, { recursive: true });
+        yield* fs.writeFileString(path.join(arcRoot, ".arcadia.root"), "");
+        const personalRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-personal-root-" });
+        const personal = path.join(personalRoot, "project");
+        yield* fs.makeDirectory(personal);
+        const calls: string[] = [];
+
+        yield* Effect.gen(function* () {
+          const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+          assert.equal(yield* registry.detect({ cwd: personal }), null);
+          assert.equal(calls.length, 1, "only Git detection runs for a personal folder");
+
+          const detected = yield* registry.detect({ cwd: projectDir });
+          assert.equal(detected?.kind, "arc");
+          assert.equal(detected?.repository.rootPath, resolvedArcRoot);
+          assert.equal(
+            detected?.repository.metadataPath,
+            path.join(resolvedArcRoot, ".arcadia.root"),
+          );
+          assert.equal(calls.length, 1, "Arc detection uses marker stats without invoking any CLI");
+        }).pipe(Effect.provide(makeDiskBackedLayer(personalRoot, calls)));
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
 });

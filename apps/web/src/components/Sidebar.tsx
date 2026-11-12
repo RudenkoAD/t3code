@@ -55,7 +55,9 @@ import {
 } from "@t3tools/client-runtime/environment";
 import {
   AuthOrchestrationOperateScope,
+  AuthSettingsWriteScope,
   ProjectId,
+  resolveProjectProfile,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -147,12 +149,13 @@ import {
   useQuietThreadShells,
 } from "../state/entities";
 import { environmentPresentations } from "../state/presentation";
-import { primaryServerKeybindingsAtom } from "../state/server";
+import { primaryServerKeybindingsAtom, serverEnvironment } from "../state/server";
 import { environmentProjects } from "../state/projects";
 import { threadEnvironment } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { useAtomCommand } from "../state/use-atom-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
@@ -235,6 +238,8 @@ import { copyThreadReference } from "../lib/copyThreadReference";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { Button } from "./ui/button";
 import { isProjectPinShortcut, ProjectPinButton } from "./ProjectPinButton";
+import { ProjectProfileSelector, useProjectProfileView } from "./ProjectProfileSelector";
+import { profileViewIncludesMembers } from "../projectProfileView";
 import {
   Combobox,
   ComboboxEmpty,
@@ -823,13 +828,6 @@ function useSidebarLookups() {
   const projectGroupByScopeKey = new Map(
     projectGroups.map((project) => [project.projectKey, project] as const),
   );
-  const projectScopeItems = [
-    { value: "all", label: "All projects" },
-    ...pickableProjectGroups(projectGroups).map((project) => ({
-      value: project.projectKey,
-      label: project.displayName,
-    })),
-  ];
   return {
     projects,
     serverConfigs,
@@ -839,7 +837,6 @@ function useSidebarLookups() {
     projectByKey,
     projectDisplayNameByKey,
     projectGroupByScopeKey,
-    projectScopeItems,
   };
 }
 
@@ -906,7 +903,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     projectByKey,
     projectDisplayNameByKey,
     projectGroupByScopeKey,
-    projectScopeItems: lookupProjectScopeItems,
   } = useSidebarLookups();
   const delegatedUnderParent = useDelegatedUnderParent();
   const router = useRouter();
@@ -916,6 +912,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const [profileView, setProfileView] = useProjectProfileView();
   const {
     settleThread,
     unsettleThread,
@@ -933,6 +930,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     deleteThread,
   } = useThreadActions();
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
+    reportFailure: false,
+  });
+  const updateEnvironmentSettings = useAtomCommand(serverEnvironment.updateSettings, {
     reportFailure: false,
   });
   const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
@@ -1078,6 +1078,26 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // loaded. The stored keys are left alone, so the scope returns with its project.
   // An archived project's scope reads as all projects, matching the menu.
   const scopeGroups = pickableProjectGroups(projectGroups);
+  const projectProfileForMember = (member: { environmentId: string; id: string }) => {
+    const settings = serverConfigs.get(member.environmentId as EnvironmentId)?.settings;
+    return settings ? resolveProjectProfile(settings, member.id as ProjectId) : "personal";
+  };
+  const projectGroupHasProfile = (group: SidebarProjectSnapshot, profile: "work" | "personal") =>
+    profileViewIncludesMembers(
+      profile,
+      group.memberProjects.map((member) => projectProfileForMember(member)),
+    );
+  const visibleProfileGroups =
+    profileView === "all"
+      ? scopeGroups
+      : scopeGroups.filter((group) => projectGroupHasProfile(group, profileView));
+  const visibleProjectScopeItems = [
+    { value: "all", label: "All projects" },
+    ...visibleProfileGroups.map((project) => ({
+      value: project.projectKey,
+      label: project.displayName,
+    })),
+  ];
   const archivedProjectKeys = new Set(
     projectGroups.filter((project) => project.archived).map((project) => project.projectKey),
   );
@@ -1100,7 +1120,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             ),
           ),
         );
-  const threads = useQuietThreadShells();
+  const allThreads = useQuietThreadShells();
+  const threads =
+    profileView === "all"
+      ? allThreads
+      : allThreads.filter((thread) => {
+          if (!thread.projectId) return false;
+          const project = projectByKey.get(`${thread.environmentId}:${thread.projectId}`);
+          return project !== undefined && projectProfileForMember(project) === profileView;
+        });
   const promotingDraftThreadKeys = usePromotingDraftThreadKeys();
   const listedThreads =
     promotingDraftThreadKeys.length === 0
@@ -1172,7 +1200,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   // Pinning from a row keeps rows in place while the menu is open.
   const projectScopeItems = useOrderWhileOpen(
-    lookupProjectScopeItems,
+    visibleProjectScopeItems,
     (item) => item.value,
     projectScopeMenuState.open,
   );
@@ -1257,6 +1285,42 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (isMobile) setOpenMobile(false);
     void handleNewThread(scopeProjectRef(group.environmentId, group.id));
   });
+  const assignProjectGroupProfile = useStableCallback(
+    async (group: SidebarProjectSnapshot, profile: "work" | "personal") => {
+      for (const member of group.memberProjects) {
+        if (!readEnvironmentScope(member.environmentId, AuthSettingsWriteScope)) {
+          toastManager.add({
+            type: "error",
+            title: "Project profile not changed",
+            description: `You do not have settings permission on ${member.environmentLabel ?? "this environment"}.`,
+          });
+          return;
+        }
+        const result = await updateEnvironmentSettings({
+          environmentId: member.environmentId,
+          input: { patch: { projectProfiles: { [member.id]: profile } } },
+        });
+        if (result._tag === "Failure") {
+          if (!isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Project profile not changed",
+                description:
+                  error instanceof Error ? error.message : "The setting could not be saved.",
+              }),
+            );
+          }
+          return;
+        }
+      }
+      toastManager.add({
+        type: "success",
+        title: `Moved ${group.displayName} to ${profile === "work" ? "Work" : "Personal"}`,
+      });
+    },
+  );
   const handleProjectFolderContextMenu = useStableCallback(
     (group: SidebarProjectSnapshot, position: { x: number; y: number }) => {
       const api = readLocalApi();
@@ -1267,6 +1331,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             [
               { id: "new-thread", label: "New thread" },
               { id: "copy-path", label: "Copy path" },
+              ...(projectGroupHasProfile(group, "work")
+                ? [{ id: "move-personal", label: "Move to Personal" }]
+                : projectGroupHasProfile(group, "personal")
+                  ? [{ id: "move-work", label: "Move to Work" }]
+                  : [
+                      { id: "move-work", label: "Move all to Work" },
+                      { id: "move-personal", label: "Move all to Personal" },
+                    ]),
               ...(canPinProject(group)
                 ? [
                     group.pinned
@@ -1286,6 +1358,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           case "copy-path":
             copyPathToClipboard(group.workspaceRoot, { path: group.workspaceRoot });
+            return;
+          case "move-work":
+            void assignProjectGroupProfile(group, "work");
+            return;
+          case "move-personal":
+            void assignProjectGroupProfile(group, "personal");
             return;
           case "pin":
           case "unpin":
@@ -2935,6 +3013,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const showJumpHints = useThreadJumpHintsVisible(keybindings, routeThreadRef);
 
   const handleNewThreadClick = (event?: ReactMouseEvent) => {
+    if (profileView !== "all") {
+      if (isMobile) setOpenMobile(false);
+      openCommandPalette({ open: "new-thread-in" });
+      return;
+    }
     if (
       shouldCreateNewThreadInCurrentProject(
         event?.shiftKey ?? false,
@@ -2958,11 +3041,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     openCommandPalette({ open: "new-thread-in" });
   };
 
-  const newThreadShortcutLabel =
-    shortcutLabelForCommand(keybindings, "chat.new") ??
-    (shouldCreateNewThreadInCurrentProject(false, scopeGroups.length, projectGroups.length)
-      ? shortcutLabelForCommand(keybindings, "chat.newLocal")
-      : undefined);
+  const newThreadShortcutLabel = shortcutLabelForCommand(keybindings, "chat.new");
   const newThreadInProjectShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newLocal");
   return (
     <>
@@ -2974,6 +3053,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           <SidebarGroup className="z-[1]">
             <SidebarThreadHeader
               hasProjects={projectGroups.length > 0}
+              profileScope={
+                <div className="flex w-full items-center justify-between gap-2 px-1">
+                  <span className="text-xs text-sidebar-muted-foreground">Projects</span>
+                  <ProjectProfileSelector
+                    value={profileView}
+                    onChange={(next) => {
+                      setProfileView(next);
+                      setProjectScopeKeys([]);
+                    }}
+                    className="max-w-32"
+                  />
+                </div>
+              }
               projectScope={
                 <Combobox
                   items={projectScopeItems}
@@ -3090,7 +3182,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         ) {
                           return;
                         }
-                        if (project) handleProjectSettings(event, project);
+                        if (project) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          handleProjectFolderContextMenu(project, { x: rect.left, y: rect.bottom });
+                        }
                       }}
                       onChange={(event) =>
                         dispatchProjectScopeMenu({
@@ -3115,7 +3212,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             // The icon badge marks selection; Base UI's single value would shade one row.
                             data-selected={undefined}
                             onContextMenu={(event) => {
-                              if (project) handleProjectSettings(event, project);
+                              if (!project) return;
+                              event.preventDefault();
+                              event.stopPropagation();
+                              handleProjectFolderContextMenu(project, {
+                                x: event.clientX,
+                                y: event.clientY,
+                              });
                             }}
                           >
                             <ProjectScopeRowIcon isSelected={isSelected}>
@@ -3177,16 +3280,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               }
               onNewProject={openAddProjectCommandPalette}
               onNewThread={handleNewThreadClick}
-              newThreadDisabled={projects.length === 0}
+              newThreadDisabled={
+                profileView === "all" ? projects.length === 0 : visibleProfileGroups.length === 0
+              }
               newThreadShortcutLabel={newThreadShortcutLabel}
               newThreadInProjectShortcutLabel={newThreadInProjectShortcutLabel}
-              showNewThreadInProjectHint={
-                !shouldCreateNewThreadInCurrentProject(
-                  false,
-                  scopeGroups.length,
-                  projectGroups.length,
-                )
-              }
+              showNewThreadInProjectHint={profileView === "all"}
               searchInputRef={threadSearchInputRef}
               searchQuery={threadSearchQuery}
               onSearchQueryChange={(value) => {

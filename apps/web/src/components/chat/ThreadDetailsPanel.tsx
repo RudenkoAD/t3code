@@ -5,6 +5,7 @@ import type {
   ProjectScript,
   ResolvedKeybindingsConfig,
   ThreadId,
+  VcsDriverKind,
 } from "@t3tools/contracts";
 
 import type { DraftId } from "../../composerDraftStore";
@@ -62,6 +63,7 @@ interface ThreadDetailsPanelProps extends Pick<
   openInShortcutEnabled: boolean;
   gitCwd: string | null;
   isGitRepo: boolean;
+  vcsKind?: VcsDriverKind;
   envLocked: boolean;
   availableEnvironments: readonly EnvironmentOption[];
   autoEnvironmentLabel?: string | undefined;
@@ -96,6 +98,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const activeThreadRef = { environmentId: props.environmentId, threadId: props.threadId };
   const branchToolbarProps = {
     showGitControls: props.isGitRepo,
+    ...(props.vcsKind ? { vcsKind: props.vcsKind } : {}),
     environmentId: props.environmentId,
     threadId: props.threadId,
     projectId: props.projectId,

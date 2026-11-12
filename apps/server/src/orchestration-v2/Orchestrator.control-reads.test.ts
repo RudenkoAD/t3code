@@ -43,6 +43,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "gpt-5.1-codex" };
+const personalInstanceId = ProviderInstanceId.make("t3profile_personal_codex");
 const adapter = {
   instanceId,
   driver: ProviderDriverKind.make("codex"),
@@ -50,6 +51,7 @@ const adapter = {
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("No provider process needed for metadata controls"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
+const personalAdapter = { ...adapter, instanceId: personalInstanceId };
 const layerDatabase = SqlitePersistence.layerMemory;
 const layerTest = Layer.mergeAll(
   layerDatabase,
@@ -57,7 +59,7 @@ const layerTest = Layer.mergeAll(
   EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
   ProviderReplayHarness.layerWithRegistry(
     { name: "control-reads" },
-    ProviderAdapterRegistry.layerFromAdapters([adapter]),
+    ProviderAdapterRegistry.layerFromAdapters([adapter, personalAdapter]),
     { databaseLayer: layerDatabase, runEffectWorker: false },
   ),
 );
@@ -445,6 +447,43 @@ it.effect("marks a never-visited thread's first completion unread", () =>
       (yield* projections.getThreadShell(threadId))?.lastVisitedAt,
       ended.lastVisitedAt,
     );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("routes a legacy Codex chat send into the project's profile instance", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:legacy-codex-profile-route");
+    const projectId = ProjectId.make("project:legacy-codex-profile-route");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-legacy-codex-profile-route"),
+      threadId,
+      projectId,
+      title: "Legacy Codex chat",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("send-legacy-codex-profile-route"),
+      threadId,
+      messageId: MessageId.make("send-legacy-codex-profile-route"),
+      text: "Continue this existing chat",
+      attachments: [],
+      dispatchMode: { type: "defer_start" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const projection = yield* projections.getThreadProjection(threadId);
+    assert.equal(projection.runs.at(-1)?.providerInstanceId, personalInstanceId);
+    assert.equal(projection.runs.at(-1)?.modelSelection.instanceId, personalInstanceId);
   }).pipe(Effect.provide(layerTest)),
 );
 

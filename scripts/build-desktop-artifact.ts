@@ -186,6 +186,7 @@ interface BuildCliInput {
   readonly signed: Option.Option<boolean>;
   readonly verbose: Option.Option<boolean>;
   readonly mockUpdates: Option.Option<boolean>;
+  readonly localFork: Option.Option<boolean>;
   readonly mockUpdateServerPort: Option.Option<number>;
   readonly wslRuntime: Option.Option<string>;
 }
@@ -957,6 +958,7 @@ interface ResolvedBuildOptions {
   readonly signed: boolean;
   readonly verbose: boolean;
   readonly mockUpdates: boolean;
+  readonly localFork: boolean;
   readonly mockUpdateServerPort: number | undefined;
   readonly wslRuntime: string | undefined;
 }
@@ -1651,6 +1653,7 @@ const BuildEnvConfig = Config.all({
   signed: Config.Boolean("T3CODE_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
   verbose: Config.Boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
   mockUpdates: Config.Boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
+  localFork: Config.Boolean("T3CODE_DESKTOP_LOCAL_FORK").pipe(Config.withDefault(false)),
   mockUpdateServerPort: Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
   wslRuntime: Config.String("T3CODE_DESKTOP_WSL_RUNTIME").pipe(Config.option),
 });
@@ -1732,6 +1735,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
 
   const mockUpdates = resolveBooleanFlag(input.mockUpdates, env.mockUpdates);
+  const localFork = resolveBooleanFlag(input.localFork, env.localFork);
   const configuredMockUpdateServerPort = Option.getOrUndefined(env.mockUpdateServerPort);
   const mockUpdateServerPort =
     Option.getOrUndefined(input.mockUpdateServerPort) ??
@@ -1757,6 +1761,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     signed,
     verbose,
     mockUpdates,
+    localFork,
     mockUpdateServerPort,
     wslRuntime,
   } satisfies ResolvedBuildOptions;
@@ -2722,6 +2727,10 @@ export function isDesktopPreviewVersion(version: string): boolean {
   return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
 }
 
+export function isDesktopLocalForkVersion(version: string): boolean {
+  return version.endsWith("-local-fork");
+}
+
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
   return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
 }
@@ -2758,6 +2767,7 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
+  if (isDesktopLocalForkVersion(version)) return "T3 Code (Local Fork)";
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
@@ -2778,6 +2788,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  localFork = false,
 ) {
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
@@ -2811,7 +2822,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const updateChannel = resolveDesktopUpdateChannel(version);
   // Missing publish config infers a GitHub feed from tokens; staging has no repository, so manifest generation would crash.
   buildConfig.publish = null;
-  if (!isDesktopPreviewVersion(version)) {
+  if (!localFork && !isDesktopLocalForkVersion(version) && !isDesktopPreviewVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
@@ -2830,6 +2841,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const repoRoot = yield* RepoRoot;
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
+      ...(localFork ? { identity: "-" } : {}),
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       extendInfo: {
@@ -3650,7 +3662,12 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       }),
   });
 
-  const appVersion = options.version ?? serverPackageJson.version;
+  const baseAppVersion = options.version ?? serverPackageJson.version;
+  const appVersion = options.localFork
+    ? isDesktopLocalForkVersion(baseAppVersion)
+      ? baseAppVersion
+      : `${baseAppVersion}-local-fork`
+    : baseAppVersion;
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
@@ -3898,6 +3915,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
+      options.localFork,
     ),
     dependencies: stageDependencies,
     devDependencies: {
@@ -4077,7 +4095,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const copiedArtifacts = yield* copyDesktopBuildArtifacts(
     stageDistDir,
     options.outputDir,
-    options.target === "dir",
+    options.target === "dir" || options.localFork,
   );
 
   if (copiedArtifacts.length === 0) {
@@ -4184,6 +4202,12 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   ),
   mockUpdates: Flag.Boolean("mock-updates").pipe(
     Flag.withDescription("Enable mock updates (env: T3CODE_DESKTOP_MOCK_UPDATES)."),
+    Flag.optional,
+  ),
+  localFork: Flag.Boolean("local-fork").pipe(
+    Flag.withDescription(
+      "Build a distinct local fork with updates disabled (env: T3CODE_DESKTOP_LOCAL_FORK).",
+    ),
     Flag.optional,
   ),
   mockUpdateServerPort: Flag.Int("mock-update-server-port").pipe(

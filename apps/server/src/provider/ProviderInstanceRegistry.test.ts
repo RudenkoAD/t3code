@@ -45,6 +45,7 @@ import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
+import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistry.ts";
 import { ProviderDriverError } from "./Errors.ts";
@@ -360,6 +361,29 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       expect(instance!.enabled).toBe(false);
       const snapshot = yield* instance!.snapshot.getSnapshot;
       expect(snapshot.enabled).toBe(false);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live("passes the scoped home into the Claude turn adapter", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const createAdapter = vi.spyOn(ClaudeAdapterV2, "createClaudeAdapterV2");
+      yield* Effect.addFinalizer(() => Effect.sync(() => createAdapter.mockRestore()));
+      const instanceId = ProviderInstanceId.make("t3profile_work_claudeAgent");
+
+      yield* ClaudeDriver.create({
+        instanceId,
+        displayName: "Work Claude",
+        enabled: false,
+        environment: [],
+        config: ClaudeDriver.defaultConfig(),
+      }).pipe(Effect.scoped);
+
+      expect(createAdapter).toHaveBeenCalled();
+      expect(createAdapter.mock.calls[0]?.[0].config.homePath).toBe(
+        path.join(stateDir, "profiles", "work", "claude"),
+      );
     }).pipe(Effect.provide(layerTest)),
   );
 

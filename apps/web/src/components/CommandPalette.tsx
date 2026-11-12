@@ -49,6 +49,7 @@ import {
   type DesktopWslState,
   type EnvironmentId,
   type FilesystemBrowseResult,
+  resolveProjectProfile,
   SourceControlProviderKind,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   resolveEnvironmentMachineKind,
@@ -126,6 +127,8 @@ import { useScratchProject } from "../hooks/useScratchProject";
 import { useStartTriage } from "../hooks/useStartTriage";
 import { pickTriageEnvironment } from "../lib/triageTarget";
 import { useNewProject } from "../hooks/useNewProject";
+import { useProjectProfileView } from "./ProjectProfileSelector";
+import { profileViewIncludesMembers } from "../projectProfileView";
 import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
 import { reportProjectFailure, useProjectPin } from "../hooks/useProjectGroupUpdate";
 import {
@@ -442,6 +445,8 @@ function OpenCommandPaletteDialog(props: {
     setHighlightedItemValue(null);
   }
   const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
+  const [projectProfileView] = useProjectProfileView();
+  const projectProfile = projectProfileView === "all" ? "personal" : projectProfileView;
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -474,6 +479,7 @@ function OpenCommandPaletteDialog(props: {
     useHandleNewThread();
   const paletteRouteTarget = useThreadRouteTarget();
   const projects = useProjects();
+  const serverConfigs = useServerConfigs();
   const referenceThreadRef =
     pathname === "/pull-requests"
       ? environments.some((environment) => environment.serverConfig !== null)
@@ -483,7 +489,7 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
-  const activeThreadServerConfig = useServerConfigs().get(
+  const activeThreadServerConfig = serverConfigs.get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
   const canShareActiveThreadWithGuest = useAtomValue(
@@ -535,6 +541,15 @@ function OpenCommandPaletteDialog(props: {
   const [isRemoteProjectCloning, setIsRemoteProjectCloning] = useState(false);
   const { environmentLabelById, projectEnvironmentLocationById } = useEnvironmentLookups();
   const projectGroups = useSortedProjectGroups(environmentLabelById);
+  const profileEligibleProjectGroups = pickableProjectGroups(projectGroups).filter((group) =>
+    profileViewIncludesMembers(
+      projectProfileView,
+      group.memberProjects.map((member) => {
+        const settings = serverConfigs.get(member.environmentId)?.settings;
+        return settings ? resolveProjectProfile(settings, member.id) : "personal";
+      }),
+    ),
+  );
   const contextualProjectRef = resolveThreadActionProjectRef({
     activeDraftThread,
     activeThread: activeThread ?? undefined,
@@ -542,7 +557,7 @@ function OpenCommandPaletteDialog(props: {
     handleNewThread,
   });
   const projectPickerEntries = buildSidebarProjectPickerEntries({
-    groups: pickableProjectGroups(projectGroups),
+    groups: profileEligibleProjectGroups,
     preferredProjectRef: contextualProjectRef,
   });
   const pickerProjects = projectPickerEntries.map(({ group, targetProject }) => ({
@@ -682,7 +697,8 @@ function OpenCommandPaletteDialog(props: {
   const currentProjectEnvironmentId =
     activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null;
   const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
-  const scratchTargetEnvironmentId = scratchEnvironmentId(currentProjectEnvironmentId);
+  const scratchTargetEnvironmentId =
+    projectProfileView === "all" ? scratchEnvironmentId(currentProjectEnvironmentId) : null;
   const supportsTriage = (environmentId: EnvironmentId | null) =>
     environments.find((environment) => environment.environmentId === environmentId)?.serverConfig
       ?.environment.capabilities.triage === true;
@@ -1267,7 +1283,7 @@ function OpenCommandPaletteDialog(props: {
   if (projects.length > 0) {
     const activeProjectTitle =
       projectPickerEntries.find((entry) => entry.isPreferred)?.group.displayName ??
-      currentProject?.title ??
+      (projectProfileView === "all" ? (currentProject?.title ?? null) : null) ??
       null;
 
     if (activeProjectTitle) {
@@ -1824,6 +1840,7 @@ function OpenCommandPaletteDialog(props: {
     readonly rawCwd: string;
     readonly platform: string;
     readonly currentProjectCwd: string | null;
+    readonly profile: "work" | "personal";
   }) => {
     const environment = environments.find(
       (candidate) => candidate.environmentId === input.environmentId,
@@ -1928,6 +1945,7 @@ function OpenCommandPaletteDialog(props: {
         workspaceRoot: cwd,
         createWorkspaceRootIfMissing: true,
         defaultModelSelection: null,
+        profile: input.profile,
       },
     });
     if (createResult._tag === "Failure") {
@@ -1968,6 +1986,7 @@ function OpenCommandPaletteDialog(props: {
       rawCwd,
       platform: browseEnvironmentPlatform,
       currentProjectCwd: currentProjectCwdForBrowse,
+      profile: projectProfile,
     });
   };
 
@@ -1994,6 +2013,7 @@ function OpenCommandPaletteDialog(props: {
       createNewProject({
         environmentId: newProjectFlow.environmentId,
         name: newProjectName,
+        profile: projectProfile,
         publishTo: newProjectPublishes ? newProjectPublishTarget : null,
       }),
     );
@@ -2176,6 +2196,7 @@ function OpenCommandPaletteDialog(props: {
         createdAt: new Date().toISOString(),
         remoteUrl: addProjectCloneFlow.remoteUrl,
         destinationPath,
+        profile: projectProfile,
       },
     });
     setIsRemoteProjectCloning(false);
@@ -2783,6 +2804,7 @@ function OpenCommandPaletteDialog(props: {
         rawCwd: selection.linuxPath,
         platform: "Linux",
         currentProjectCwd: null,
+        profile: projectProfile,
       });
       return;
     }

@@ -3738,6 +3738,9 @@ export default function ChatView(props: ChatViewProps) {
                                   worktreePath={activeThread.worktreePath}
                                   isServerThread={isServerThread}
                                   showGitControls={isGitRepo}
+                                  {...(gitStatusQuery.data?.vcsKind
+                                    ? { vcsKind: gitStatusQuery.data.vcsKind }
+                                    : {})}
                                   {...(routeKind === "draft" && draftId ? { draftId } : {})}
                                   onEnvModeChange={onEnvModeChangeStable}
                                   startFromOrigin={startFromOrigin}
@@ -3853,6 +3856,9 @@ export default function ChatView(props: ChatViewProps) {
                   }
                   gitCwd={gitCwd}
                   isGitRepo={isGitRepo}
+                  {...(gitStatusQuery.data?.vcsKind
+                    ? { vcsKind: gitStatusQuery.data.vcsKind }
+                    : {})}
                   envLocked={envLocked}
                   availableEnvironments={logicalProjectEnvironments}
                   autoEnvironmentLabel={autoEnvironmentLabel}

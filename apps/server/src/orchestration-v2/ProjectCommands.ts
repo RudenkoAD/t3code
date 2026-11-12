@@ -5,6 +5,7 @@ import {
   type ModelSelection,
   type ProjectIconOverride,
   ProjectId,
+  type ProjectProfile,
   type ProjectScript,
   SCRIPT_RUN_COMMAND_PATTERN,
   type ThreadEnvMode,
@@ -17,6 +18,7 @@ import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventS
 import type { ProjectRow } from "./ProjectStore.ts";
 
 export interface ProjectCreateCommand {
+  readonly profile?: ProjectProfile;
   readonly type: "project.create";
   readonly commandId: CommandId;
   readonly projectId: ProjectId;

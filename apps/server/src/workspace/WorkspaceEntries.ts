@@ -3,6 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as RcMap from "effect/RcMap";
@@ -27,6 +28,7 @@ import { normalizeSearchQuery } from "@t3tools/shared/searchRanking";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as RepositoryLocator from "../vcs/RepositoryLocator.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
 import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
 
@@ -155,9 +157,27 @@ const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(fu
 /** @public */
 export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
+  const fileSystem = yield* FileSystem.FileSystem;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const workspaceSearchIndexes = yield* WorkspaceSearchIndex.WorkspaceSearchIndexMap;
   const vcsProcess = yield* VcsProcess.VcsProcess;
+
+  const isArcRepository = (cwd: string) =>
+    RepositoryLocator.locateRepositoryMarker(cwd, fileSystem, path).pipe(
+      Effect.map((marker) => marker?.kind === "arc"),
+    );
+
+  // Generic FileFinder scans recursively. Arc's lazy VFS must never be handed to it.
+  const assertRecursiveSearchSupported = Effect.fn(
+    "WorkspaceEntries.assertRecursiveSearchSupported",
+  )(function* (cwd: string) {
+    if (yield* isArcRepository(cwd)) {
+      return yield* new WorkspaceSearchIndex.WorkspaceSearchIndexCreateFailed({
+        cwd,
+        reason: "Recursive workspace search is disabled for Arc repositories.",
+      });
+    }
+  });
 
   const normalizeWorkspaceRoot = Effect.fn("WorkspaceEntries.normalizeWorkspaceRoot")(function* (
     cwd: string,
@@ -170,6 +190,7 @@ export const make = Effect.gen(function* () {
       const normalizedCwd = yield* normalizeWorkspaceRoot(cwd).pipe(
         Effect.orElseSucceed(() => cwd),
       );
+      if (yield* isArcRepository(normalizedCwd)) return;
       for (const variant of WorkspaceSearchIndex.WORKSPACE_SEARCH_INDEX_VARIANTS) {
         const indexKey = WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, variant);
         if (!(yield* RcMap.has(workspaceSearchIndexes.rcMap, indexKey))) {
@@ -257,6 +278,7 @@ export const make = Effect.gen(function* () {
   const search: WorkspaceEntries["Service"]["search"] = Effect.fn("WorkspaceEntries.search")(
     function* (input) {
       const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
+      yield* assertRecursiveSearchSupported(normalizedCwd);
       const normalizedQuery = normalizeSearchQuery(input.query, {
         trimLeadingPattern: /^[@./]+/,
       });
@@ -277,6 +299,7 @@ export const make = Effect.gen(function* () {
     "WorkspaceEntries.searchContents",
   )(function* (input) {
     const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
+    yield* assertRecursiveSearchSupported(normalizedCwd);
     return yield* Effect.gen(function* () {
       const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
       return yield* searchIndex.searchContents(input);
@@ -412,19 +435,24 @@ export const make = Effect.gen(function* () {
         let gitRoot = "";
         let gitPrefix = "";
         // stdin avoids argument limits; ignore classification is optional without git/repositories.
-        const checkIgnore = (paths: ReadonlyArray<string>) =>
-          vcsProcess
+        const checkIgnore = Effect.fn("WorkspaceEntries.checkIgnore")(function* (
+          paths: ReadonlyArray<string>,
+        ) {
+          const cwd = path.join(normalizedCwd, gitRoot);
+          if (yield* isArcRepository(cwd)) return undefined;
+          return yield* vcsProcess
             .run({
               operation: "WorkspaceEntries.list",
               command: "git",
               args: ["-c", "core.fsmonitor=false", "check-ignore", "-z", "--stdin"],
-              cwd: path.join(normalizedCwd, gitRoot),
+              cwd,
               stdin: `${paths.map((entryPath) => entryPath.slice(gitPrefix.length)).join("\0")}\0`,
               allowNonZeroExit: true,
               timeoutMs: 10_000,
               maxOutputBytes: 16 * 1024 * 1024,
             })
             .pipe(Effect.orElseSucceed(() => undefined));
+        });
         // Git refuses paths inside a submodule (128) but still answers for nested clones.
         for (const nestedGitRoot of nestedGitRoots) {
           if ((yield* checkIgnore([`${nestedGitRoot}/.git`]))?.exitCode !== 128) continue;
@@ -461,6 +489,7 @@ export const make = Effect.gen(function* () {
           truncated: false,
         };
       }
+      yield* assertRecursiveSearchSupported(normalizedCwd);
       return yield* Effect.gen(function* () {
         const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
         return yield* searchIndex.list();
@@ -478,6 +507,9 @@ export const make = Effect.gen(function* () {
     "WorkspaceEntries.listIgnoredFiles",
   )(function* (input) {
     const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
+    if (yield* isArcRepository(normalizedCwd)) {
+      return { files: [], truncated: false };
+    }
     // `--directory` reports a folder holding nothing but ignored files as one
     // `name/` entry, which is how `node_modules` and build output drop out.
     const result = yield* vcsProcess

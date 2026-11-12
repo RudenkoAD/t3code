@@ -479,6 +479,7 @@ export const make = Effect.gen(function* () {
       const local = yield* workflow.localStatus({ cwd });
       if (
         !local.isRepo ||
+        local.vcsKind === "arc" ||
         !local.isDefaultRef ||
         local.hasWorkingTreeChanges ||
         local.refName !== remoteRead?.branch

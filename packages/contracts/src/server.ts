@@ -612,6 +612,7 @@ export const ServerConfig = Schema.Struct({
   auth: ServerAuthDescriptor,
   cwd: TrimmedNonEmptyString,
   keybindingsConfigPath: TrimmedNonEmptyString,
+  profileHomeDirectory: Schema.optionalKey(TrimmedNonEmptyString),
   keybindings: ResolvedKeybindingsConfig,
   issues: ServerConfigIssues,
   providers: ServerProviders,

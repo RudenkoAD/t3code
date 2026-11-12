@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { FileFinder } from "@ff-labs/fff-node";
 import { it, afterEach, describe, expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -96,6 +97,33 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
   });
 
   describe("list", () => {
+    it.effect(
+      "keeps Arc workspace listing shallow and rejects recursive search from nested folders",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTempDir();
+          yield* writeTextFile(cwd, ".arcadia.root", "");
+          yield* writeTextFile(cwd, "nested/visible.txt", "visible");
+          const nestedCwd = `${cwd}/nested`;
+          const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+          const vcsProcess = yield* VcsProcess.VcsProcess;
+          const runVcs = vi.spyOn(vcsProcess, "run");
+          const createFinder = vi.spyOn(FileFinder, "create");
+
+          const listed = yield* workspaceEntries.list({ cwd, directoryPath: "nested" });
+          const ignored = yield* workspaceEntries.listIgnoredFiles({ cwd });
+          const search = yield* Effect.exit(
+            workspaceEntries.search({ cwd: nestedCwd, query: "visible", limit: 10 }),
+          );
+
+          expect(listed.entries).toContainEqual({ path: "nested/visible.txt", kind: "file" });
+          expect(ignored).toEqual({ files: [], truncated: false });
+          expect(Exit.isFailure(search)).toBe(true);
+          expect(createFinder).not.toHaveBeenCalled();
+          expect(runVcs).not.toHaveBeenCalled();
+        }),
+    );
+
     it.effect("lists immediate children including ignored and empty directories", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTempDir({ git: true });

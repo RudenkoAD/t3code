@@ -172,6 +172,7 @@ import {
 } from "./ProjectionStore.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { routeProfileProviderSelection } from "./profileProviderRouting.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
@@ -1944,7 +1945,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const queuedMessage = projection.messages.find(
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
       );
-      const modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
+      const storedModelSelection = queuedRunModelSelection(projection, storedQueuedRun);
+      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+      const modelSelection = routeProfileProviderSelection(
+        settings,
+        projection.thread.projectId,
+        storedModelSelection,
+      );
+      if (modelSelection === undefined) {
+        const now = yield* DateTime.now;
+        yield* writeSystemEvents(
+          projection.runs
+            .filter((run) => run.status === "queued")
+            .map((run) => ({
+              type: "run.updated" as const,
+              threadId,
+              runId: run.id,
+              providerInstanceId: run.providerInstanceId,
+              occurredAt: now,
+              payload: { ...run, queueHeld: true },
+            })),
+        );
+        return;
+      }
       const queuedRun = {
         ...storedQueuedRun,
         modelSelection,
@@ -1968,7 +1991,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         failedRun?.id === options?.endedRunId &&
         failedRun?.workspacePreparation?.type === "worktree" &&
         projection.thread.worktreePath === null;
-      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
       const projectOverride =
         settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
           queuedRun.providerInstanceId
@@ -6128,7 +6150,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]);
       projection = applyToProjection(projection, event);
     }
-    let modelSelection = command.modelSelection ?? projection.thread.modelSelection;
+    const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+    let modelSelection = routeProfileProviderSelection(
+      settings,
+      projection.thread.projectId,
+      command.modelSelection ?? projection.thread.modelSelection,
+    );
+    if (modelSelection === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "This provider is not available in the project's profile.",
+      });
+    }
     let dispatchMode = resolveMessageDispatchIntent(
       projection,
       command.dispatchMode,
@@ -6474,6 +6508,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       modelSelection = queueTailModelSelection(projection);
     }
+    const routedModelSelection = routeProfileProviderSelection(
+      settings,
+      projection.thread.projectId,
+      modelSelection,
+    );
+    if (routedModelSelection === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "This provider is not available in the project's profile.",
+      });
+    }
+    modelSelection = routedModelSelection;
     yield* ensureGoalCommandSupported(command, command, modelSelection.instanceId);
     // Client messages resume held queues; server continuations and scheduled tasks do not.
     // Provider failure or usage limits re-hold the queue.

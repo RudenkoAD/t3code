@@ -15,7 +15,10 @@ import {
   globalIdleCompaction,
   idleCompactionPatch,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
+  profileProviderInstanceId,
   requiredScopesForProjectMutation,
+  resolveProjectProfile,
+  resolveProjectProviderInstanceId,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
@@ -473,6 +476,77 @@ describe("resolveProjectProviderInstanceEnabled", () => {
       },
     };
     expect(resolveProjectProviderInstanceEnabled(settings, projectId, instanceId)).toBe(false);
+  });
+
+  it("maps legacy Codex and Claude selections to the project's isolated provider IDs", () => {
+    const workProject = ProjectId.make("work-project");
+    const personalProject = ProjectId.make("personal-project");
+    const settings: ServerSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      projectProfiles: { [workProject]: "work", [personalProject]: "personal" },
+    };
+    const codexId = ProviderInstanceId.make("codex");
+    const claudeId = ProviderInstanceId.make("claudeAgent");
+
+    expect(resolveProjectProfile(settings, workProject)).toBe("work");
+    expect(resolveProjectProfile(settings, ProjectId.make("unassigned"))).toBe("personal");
+    expect(resolveProjectProviderInstanceId(settings, workProject, codexId)).toBe(
+      profileProviderInstanceId("work", codexId),
+    );
+    expect(resolveProjectProviderInstanceId(settings, personalProject, claudeId)).toBe(
+      profileProviderInstanceId("personal", claudeId),
+    );
+    expect(
+      resolveProjectProviderInstanceEnabled(
+        settings,
+        workProject,
+        profileProviderInstanceId("work", codexId),
+      ),
+    ).toBe(true);
+    expect(
+      resolveProjectProviderInstanceEnabled(
+        settings,
+        workProject,
+        profileProviderInstanceId("personal", codexId),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not route project chats to global or unsupported providers", () => {
+    const projectId = ProjectId.make("project-a");
+    const customId = ProviderInstanceId.make("codex_writer");
+    const settings: ServerSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [customId]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+      },
+      projectSettingsOverrides: {
+        [projectId]: { providerInstances: { [customId]: { enabled: true } } },
+      },
+    };
+
+    expect(resolveProjectProviderInstanceEnabled(settings, projectId, customId)).toBe(false);
+    expect(resolveProjectProviderInstanceEnabled(settings, null, customId)).toBe(true);
+  });
+
+  it("honors profile provider switches independently", () => {
+    const projectId = ProjectId.make("work-project");
+    const codexId = ProviderInstanceId.make("codex");
+    const workId = profileProviderInstanceId("work", codexId);
+    const settings: ServerSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      projectProfiles: { [projectId]: "work" },
+      profileProviderSettings: {
+        ...DEFAULT_SERVER_SETTINGS.profileProviderSettings,
+        work: { codexEnabled: false, claudeEnabled: true },
+      },
+    };
+
+    expect(resolveProjectProviderInstanceEnabled(settings, projectId, workId)).toBe(false);
+    expect(resolveProjectProviderInstanceEnabled(settings, projectId, codexId)).toBe(false);
+    expect(
+      resolveProjectProviderInstanceEnabled(settings, ProjectId.make("personal-project"), codexId),
+    ).toBe(true);
   });
 });
 

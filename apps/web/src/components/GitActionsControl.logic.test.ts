@@ -52,6 +52,39 @@ describe("when: ref is clean, ahead, and has an open PR", () => {
   });
 });
 
+describe("when: Arc tracking counts are unavailable", () => {
+  const arcStatus = status({
+    vcsKind: "arc",
+    sourceControlProvider: {
+      kind: SourceControlProviderKind.make("arcanum"),
+      name: "Arcanum",
+      baseUrl: "https://a.yandex-team.ru",
+    },
+    trackingCountsKnown: false,
+    workingTree: { files: [], insertions: 0, deletions: 0, lineCountsKnown: false },
+  });
+
+  it("keeps push and review creation available for a non-default Arc branch", () => {
+    const items = buildMenuItems(arcStatus, false);
+    assert.equal(items.find((item) => item.id === "push")?.disabled, false);
+    assert.equal(items.find((item) => item.id === "pr")?.disabled, false);
+    assert.deepInclude(resolveQuickAction(arcStatus, false), {
+      kind: "run_action",
+      action: "create_pr",
+      label: "Push & create review",
+    });
+  });
+
+  it("keeps the commit quick action for dirty Arc branches", () => {
+    const quick = resolveQuickAction({ ...arcStatus, hasWorkingTreeChanges: true }, false);
+    assert.deepInclude(quick, {
+      kind: "run_action",
+      action: "commit_push_pr",
+      label: "Commit, push & review",
+    });
+  });
+});
+
 describe("when: ref is clean, up to date, and has no open PR", () => {
   it("enables create PR when synced with upstream but ahead of default, even with local changes", () => {
     const syncedFeature = status({

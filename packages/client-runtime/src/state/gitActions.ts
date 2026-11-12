@@ -46,6 +46,14 @@ export type GitActionRequestInput = Pick<
 export function changeRequestTerminologyFor(
   gitStatus: VcsStatusResult | null,
 ): ChangeRequestTerminology {
+  if (gitStatus?.vcsKind === "arc" || gitStatus?.sourceControlProvider?.kind === "arcanum") {
+    return {
+      shortLabel: "review",
+      shortLabelWithArticle: "a review",
+      singular: "review",
+      plural: "reviews",
+    };
+  }
   return sourceControlClients.get(gitStatus?.sourceControlProvider?.kind).changeRequest;
 }
 

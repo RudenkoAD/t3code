@@ -1,5 +1,27 @@
 # Settings and project overrides
 
+## Work and Personal profiles
+
+Select **Work** or **Personal** in the sidebar before adding a project. Existing projects
+start in **Personal**. Use a project's context menu to move it between profiles. All chats in
+that project use its profile for provider and tool settings.
+
+Open **Settings → Providers** and choose **Work tools** or **Personal tools**. Each profile
+has its own Codex and Claude Code configuration directory on the machine running T3.
+These are the two providers available in profile-scoped chats.
+The settings show the exact directories. Configure a user-level MCP server from a terminal
+using the directory of the profile that should have access to it. For example, with the
+default desktop data location:
+
+```sh
+CODEX_HOME="$HOME/.t3/userdata/profiles/work/codex" codex mcp add my-server -- /path/to/server
+CLAUDE_CONFIG_DIR="$HOME/.t3/userdata/profiles/work/claude" claude mcp add --scope user my-server -- /path/to/server
+```
+
+Use `personal` in the path to configure personal chats. Complete the provider's login in
+each new home as needed. The same settings page controls T3 shared browser and device tools
+for the profile. A project's explicit tool override takes precedence.
+
 On web and desktop, the "Applying settings for …" sentence at the top of Settings pages picks
 the project and environment a change applies to. Pages that only hold device preferences, such as
 Appearance, don't show it. They start at **All projects** and **All environments**

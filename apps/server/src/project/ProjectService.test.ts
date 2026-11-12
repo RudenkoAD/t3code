@@ -597,6 +597,7 @@ it.layer(layerTest)("ProjectService", (it) => {
       const input = {
         commandId: CommandId.make("command:atomic:create"),
         projectId,
+        profile: "work" as const,
         title: "Atomic",
         workspaceRoot: "/work/atomic",
       };
@@ -609,8 +610,14 @@ it.layer(layerTest)("ProjectService", (it) => {
           (SELECT COUNT(*) FROM projection_projects WHERE project_id = ${projectId}) AS count
       `;
       assert.equal(leftovers[0]?.count, 0);
+      const settings = yield* ServerSettings.ServerSettingsService;
+      assert.isUndefined((yield* settings.getSettings).projectProfiles[projectId]);
       yield* sql`DROP TRIGGER fail_project_row`;
       assert.equal((yield* service.create(input)).id, projectId);
+      assert.equal((yield* settings.getSettings).projectProfiles[projectId], "work");
+      yield* settings.updateSettings({ projectProfiles: { [projectId]: "personal" } });
+      yield* service.create(input);
+      assert.equal((yield* settings.getSettings).projectProfiles[projectId], "personal");
     }),
   );
 });

@@ -5,6 +5,7 @@ import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as ServerConfig from "../config.ts";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
@@ -71,7 +72,7 @@ const projectId = ProjectId.make("project:launch-test");
 const otherProjectId = ProjectId.make("project:launch-other");
 const encodeThreadProjection = Schema.encodeEffect(OrchestrationV2ThreadProjectionJson);
 const modelSelection = {
-  instanceId: ProviderInstanceId.make("codex"),
+  instanceId: ProviderInstanceId.make("t3profile_personal_codex"),
   model: "gpt-5.1-codex",
 } as const;
 const project = {
@@ -106,7 +107,7 @@ const adapter = {
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
 const claudeModelSelection = {
-  instanceId: ProviderInstanceId.make("claudeAgent"),
+  instanceId: ProviderInstanceId.make("t3profile_personal_claudeAgent"),
   model: "claude-opus-5-5",
 } as const;
 const claudeAdapter = {
@@ -132,9 +133,14 @@ interface HarnessOptions {
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
+  readonly workspaceRoot?: string;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
+  const launchProject =
+    options.workspaceRoot === undefined
+      ? project
+      : { ...project, workspaceRoot: options.workspaceRoot };
   const layerDatabase = SqlitePersistence.layerMemory;
   const layerRegistry = ProviderAdapterRegistry.layerFromAdapters(options.adapters ?? [adapter]);
   const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
@@ -179,6 +185,7 @@ function makeHarness(options: HarnessOptions = {}) {
     options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
   );
   const layerExternalServices = Layer.mergeAll(
+    NodeServices.layer,
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: closeTerminal }),
@@ -191,12 +198,12 @@ function makeHarness(options: HarnessOptions = {}) {
       getById: (id) =>
         Effect.succeed(
           id === projectId
-            ? Option.some(project)
+            ? Option.some(launchProject)
             : id === otherProjectId
               ? Option.some(otherProject)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeedSome(project),
+      getByWorkspaceRoot: () => Effect.succeedSome(launchProject),
       workspaceScanDirectory: () => Effect.die("unused"),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
@@ -249,7 +256,7 @@ function makeHarness(options: HarnessOptions = {}) {
           ? Option.some({
               projectId,
               title: project.title,
-              workspaceRoot: project.workspaceRoot,
+              workspaceRoot: launchProject.workspaceRoot,
               defaultModelSelection: project.defaultModelSelection,
               defaultThreadEnvMode: null,
               autoPull: false,
@@ -324,6 +331,23 @@ function launchInput(input: {
     creationSource: "web" as const,
   };
 }
+
+it.effect("scopes a legacy Codex selection to the project's profile on launch", () => {
+  const harness = makeHarness();
+  const legacySelection = {
+    ...modelSelection,
+    instanceId: ProviderInstanceId.make("codex"),
+  };
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const launched = yield* launches.launch({
+      ...launchInput({ command: "command:profile-scope", thread: "thread:profile-scope" }),
+      modelSelection: legacySelection,
+    });
+
+    assert.equal(launched.projection.thread.modelSelection.instanceId, modelSelection.instanceId);
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect.each(
   (["new", "existing"] as const).flatMap((target) =>
@@ -784,10 +808,10 @@ it.effect("arms durable title generation after accepting the first message", () 
       });
       const generated = yield* threads.getThreadProjection(launched.threadId);
       assert.equal(generated.thread.title, "Generated title");
-      assert.deepEqual(
-        harness.generateThreadTitle.mock.calls[0]?.[0]?.modelSelection,
-        DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
-      );
+      assert.deepEqual(harness.generateThreadTitle.mock.calls[0]?.[0]?.modelSelection, {
+        ...DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+        instanceId: ProviderInstanceId.make("t3profile_personal_codex"),
+      });
 
       const manualRequestId = CommandId.make("command:title-generation:manual");
       yield* threads.dispatch({
@@ -945,6 +969,31 @@ function scratchHarness() {
 }
 
 const worktreeStrategy = { type: "worktree", baseRef: "main", startFromOrigin: true } as const;
+
+it.effect("keeps Arc thread launches on the project root when worktree mode is requested", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const arcRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "launch-arc-root-" });
+    yield* fileSystem.writeFileString(path.join(arcRoot, ".arcadia.root"), "");
+    const harness = makeHarness({ workspaceRoot: arcRoot });
+
+    const launched = yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      return yield* launches.launch(
+        launchInput({
+          command: "command:launch:arc-worktree",
+          thread: "thread:launch:arc-worktree",
+          message: "Start in Arc",
+          workspace: worktreeStrategy,
+        }),
+      );
+    }).pipe(Effect.provide(harness.layer));
+
+    assert.equal(launched.projection.thread.worktreePath, null);
+    assert.equal(harness.createWorktree.mock.calls.length, 0);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 /** Settles once preparation releases the run, or fails it. */
 const preparationSettled = (threadId: ThreadId) =>

@@ -196,6 +196,10 @@ const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
   model: "gpt-5.4",
 } satisfies ModelSelection;
+const personalModelSelection = {
+  ...modelSelection,
+  instanceId: ProviderInstanceId.make("t3profile_personal_codex"),
+} satisfies ModelSelection;
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 
 const runtimePolicy = {
@@ -207,12 +211,13 @@ const runtimePolicy = {
 function makeProviderSession(input: {
   readonly providerSessionId: ProviderSessionId;
   readonly now: DateTime.Utc;
+  readonly providerInstanceId?: ProviderInstanceId;
   readonly capabilities?: OrchestrationV2ProviderCapabilities;
 }): OrchestrationV2ProviderSession {
   return {
     id: input.providerSessionId,
     driver: CODEX_DRIVER,
-    providerInstanceId: modelSelection.instanceId,
+    providerInstanceId: input.providerInstanceId ?? modelSelection.instanceId,
     status: "ready",
     cwd: process.cwd(),
     model: "gpt-5.4",
@@ -285,6 +290,7 @@ function makeProviderThread(input: {
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
   readonly now: DateTime.Utc;
+  readonly providerInstanceId?: ProviderInstanceId;
   readonly nativeThreadId?: string;
 }): OrchestrationV2ProviderThread {
   const nativeThreadId = input.nativeThreadId ?? "native-thread";
@@ -294,7 +300,7 @@ function makeProviderThread(input: {
       nativeThreadId,
     }),
     driver: CODEX_DRIVER,
-    providerInstanceId: modelSelection.instanceId,
+    providerInstanceId: input.providerInstanceId ?? modelSelection.instanceId,
     providerSessionId: input.providerSessionId,
     appThreadId: input.threadId,
     ownerNodeId: null,
@@ -441,8 +447,10 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly beforeUnload?: Effect.Effect<void>;
     readonly spawnBeforeOpen?: boolean;
     readonly scopeCloseReached?: Deferred.Deferred<void>;
+    readonly instanceId?: ProviderInstanceId;
   } = {},
 ) {
+  const instanceId = options.instanceId ?? modelSelection.instanceId;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const countClose = Effect.addFinalizer(() =>
     Ref.update(state, (current) => ({
@@ -458,7 +466,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     ).pipe(Effect.andThen(Effect.never)),
   );
   return ProviderAdapter.ProviderAdapterV2.of({
-    instanceId: ProviderInstanceId.make("codex"),
+    instanceId,
     driver: CODEX_DRIVER,
     getCapabilities: () => Effect.succeed(options.capabilities ?? CodexCapabilities),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
@@ -485,6 +493,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           ...makeProviderSession({
             providerSessionId: input.providerSessionId,
             now,
+            providerInstanceId: instanceId,
             ...(options.capabilities === undefined ? {} : { capabilities: options.capabilities }),
           }),
           ...(options.extensionStatuses === undefined
@@ -506,7 +515,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
         }
 
         return {
-          instanceId: ProviderInstanceId.make("codex"),
+          instanceId,
           driver: CODEX_DRIVER,
           providerSessionId: input.providerSessionId,
           get providerSession() {
@@ -616,35 +625,43 @@ function layerTest(input: {
           : input.failReleaseEventWrites
             ? layerFailingReleaseEventSink
             : layerTestEventSink;
+  const adapterOptions = {
+    failEventStream: input.failEventStream ?? false,
+    ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
+    ...(input.extensionStatuses === undefined
+      ? {}
+      : { extensionStatuses: input.extensionStatuses }),
+    ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
+    ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
+    ...(input.hasPendingBackgroundWork === undefined
+      ? {}
+      : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
+    ...(input.hasPendingBackgroundWorkForThread === undefined
+      ? {}
+      : { hasPendingBackgroundWorkForThread: input.hasPendingBackgroundWorkForThread }),
+    ...(input.backgroundTasksEndWithProcess === undefined
+      ? {}
+      : { backgroundTasksEndWithProcess: input.backgroundTasksEndWithProcess }),
+    ...(input.hangSessionScopeClose === undefined
+      ? {}
+      : { hangSessionScopeClose: input.hangSessionScopeClose }),
+    ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
+    ...(input.interruptTurn === undefined ? {} : { interruptTurn: input.interruptTurn }),
+    ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
+    ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
+    ...(input.scopeCloseReached === undefined
+      ? {}
+      : { scopeCloseReached: input.scopeCloseReached }),
+  };
   const layerRegistry = Layer.unwrap(
-    makeProviderAdapter(input.state, {
-      failEventStream: input.failEventStream ?? false,
-      ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
-      ...(input.extensionStatuses === undefined
-        ? {}
-        : { extensionStatuses: input.extensionStatuses }),
-      ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
-      ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
-      ...(input.hasPendingBackgroundWork === undefined
-        ? {}
-        : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
-      ...(input.hasPendingBackgroundWorkForThread === undefined
-        ? {}
-        : { hasPendingBackgroundWorkForThread: input.hasPendingBackgroundWorkForThread }),
-      ...(input.backgroundTasksEndWithProcess === undefined
-        ? {}
-        : { backgroundTasksEndWithProcess: input.backgroundTasksEndWithProcess }),
-      ...(input.hangSessionScopeClose === undefined
-        ? {}
-        : { hangSessionScopeClose: input.hangSessionScopeClose }),
-      ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
-      ...(input.interruptTurn === undefined ? {} : { interruptTurn: input.interruptTurn }),
-      ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
-      ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
-      ...(input.scopeCloseReached === undefined
-        ? {}
-        : { scopeCloseReached: input.scopeCloseReached }),
-    }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
+    Effect.gen(function* () {
+      const globalAdapter = yield* makeProviderAdapter(input.state, adapterOptions);
+      const personalAdapter = yield* makeProviderAdapter(input.state, {
+        ...adapterOptions,
+        instanceId: ProviderInstanceId.make("t3profile_personal_codex"),
+      });
+      return ProviderAdapterRegistry.layerFromAdapters([globalAdapter, personalAdapter]);
+    }),
   );
   const layerConfiguredMcpRegistry =
     input.pauseResolve === undefined
@@ -784,7 +801,7 @@ function runBrowserAccessScenario(input: {
       const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const now = yield* DateTime.now;
       const providerSessionId = yield* idAllocator.allocate.providerSession({
-        providerInstanceId: modelSelection.instanceId,
+        providerInstanceId: personalModelSelection.instanceId,
         threadId,
       });
       if (input.createThread !== false) {
@@ -801,7 +818,12 @@ function runBrowserAccessScenario(input: {
         });
       }
       yield* manager
-        .open({ threadId, providerSessionId, modelSelection, runtimePolicy })
+        .open({
+          threadId,
+          providerSessionId,
+          modelSelection: personalModelSelection,
+          runtimePolicy,
+        })
         .pipe(Effect.ignore);
     }).pipe(
       Effect.provide(
@@ -1298,8 +1320,9 @@ it.effect(
         const now = yield* DateTime.now;
         const threadA = ThreadId.make("thread-provider-session-manager-shared-stopped-a");
         const threadB = ThreadId.make("thread-provider-session-manager-shared-stopped-b");
+        const scopedSelection = personalModelSelection;
         const providerSessionId = idAllocator.derive.providerSession({
-          providerInstanceId: modelSelection.instanceId,
+          providerInstanceId: scopedSelection.instanceId,
         });
         yield* eventSink.write({
           events: [
@@ -1310,13 +1333,13 @@ it.effect(
         const runtime = yield* manager.open({
           threadId: threadA,
           providerSessionId,
-          modelSelection,
+          modelSelection: scopedSelection,
           runtimePolicy,
         });
         yield* manager.open({
           threadId: threadB,
           providerSessionId,
-          modelSelection,
+          modelSelection: scopedSelection,
           runtimePolicy,
         });
         const startTurn = (threadId: ThreadId) =>
@@ -1330,7 +1353,13 @@ it.effect(
               providerTurnOrdinal: 1,
               attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
               rootNodeId: idAllocator.derive.rootNode({ runId }),
-              providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+              providerThread: makeProviderThread({
+                idAllocator,
+                threadId,
+                providerSessionId,
+                now,
+                providerInstanceId: scopedSelection.instanceId,
+              }),
               message: {
                 createdBy: "user",
                 creationSource: "web",
@@ -1338,7 +1367,7 @@ it.effect(
                 text: "turn",
                 attachments: [],
               },
-              modelSelection,
+              modelSelection: scopedSelection,
               runtimePolicy,
             });
           });
@@ -2153,8 +2182,9 @@ it.effect(
         const registry = yield* McpSessionRegistry.McpSessionRegistry;
         const now = yield* DateTime.now;
         const threadId = ThreadId.make("thread-provider-session-manager-no-browser");
+        const scopedSelection = personalModelSelection;
         const providerSessionId = yield* idAllocator.allocate.providerSession({
-          providerInstanceId: modelSelection.instanceId,
+          providerInstanceId: scopedSelection.instanceId,
           threadId,
         });
 
@@ -2164,7 +2194,7 @@ it.effect(
         yield* manager.open({
           threadId,
           providerSessionId,
-          modelSelection,
+          modelSelection: scopedSelection,
           runtimePolicy,
         });
 
@@ -3885,8 +3915,9 @@ it.effect(
           fixtureName: "provider-session-manager-shared-runtime-b",
           projectId,
         });
+        const scopedSelection = personalModelSelection;
         const providerSessionId = idAllocator.derive.providerSession({
-          providerInstanceId: modelSelection.instanceId,
+          providerInstanceId: scopedSelection.instanceId,
         });
 
         yield* eventSink.write({
@@ -3900,12 +3931,14 @@ it.effect(
           threadId: firstThreadId,
           providerSessionId,
           now,
+          providerInstanceId: scopedSelection.instanceId,
         });
         const secondProviderThread = makeProviderThread({
           idAllocator,
           threadId: secondThreadId,
           providerSessionId,
           now,
+          providerInstanceId: scopedSelection.instanceId,
         });
         const firstRunId = idAllocator.derive.run({ threadId: firstThreadId, ordinal: 1 });
         yield* eventSink.write({
@@ -3945,13 +3978,13 @@ it.effect(
         const firstRuntime = yield* manager.open({
           threadId: firstThreadId,
           providerSessionId,
-          modelSelection,
+          modelSelection: scopedSelection,
           runtimePolicy,
         });
         const secondRuntime = yield* manager.open({
           threadId: secondThreadId,
           providerSessionId,
-          modelSelection,
+          modelSelection: scopedSelection,
           runtimePolicy,
         });
 
@@ -3960,7 +3993,7 @@ it.effect(
         const resumeSecondThread = secondRuntime.resumeThread({
           providerThread: secondProviderThread,
           threadId: secondThreadId,
-          modelSelection,
+          modelSelection: scopedSelection,
           runtimePolicy,
         });
         yield* resumeSecondThread;
@@ -3969,7 +4002,7 @@ it.effect(
         yield* secondRuntime.resumeThread({
           providerThread: secondProviderThread,
           threadId: secondThreadId,
-          modelSelection: { ...modelSelection, model: "gpt-5.4-mini" },
+          modelSelection: { ...scopedSelection, model: "gpt-5.4-mini" },
           runtimePolicy,
         });
         assert.equal((yield* Ref.get(state)).resumeCount, 2);
@@ -4007,7 +4040,7 @@ it.effect(
         yield* manager.open({
           threadId: secondThreadId,
           providerSessionId,
-          modelSelection,
+          modelSelection: scopedSelection,
           runtimePolicy,
         });
         yield* resumeSecondThread;
@@ -4464,8 +4497,9 @@ it.effect(
           fixtureName: "provider-session-manager-exclusive-runtime-b",
           projectId,
         });
+        const scopedSelection = personalModelSelection;
         const providerSessionId = yield* idAllocator.allocate.providerSession({
-          providerInstanceId: modelSelection.instanceId,
+          providerInstanceId: scopedSelection.instanceId,
           threadId: firstThreadId,
         });
         yield* eventSink.write({
@@ -4478,14 +4512,14 @@ it.effect(
         yield* manager.open({
           threadId: firstThreadId,
           providerSessionId,
-          modelSelection,
+          modelSelection: scopedSelection,
           runtimePolicy,
         });
         const error = yield* manager
           .open({
             threadId: secondThreadId,
             providerSessionId,
-            modelSelection,
+            modelSelection: scopedSelection,
             runtimePolicy,
           })
           .pipe(Effect.flip);
@@ -4498,7 +4532,7 @@ it.effect(
         yield* manager.open({
           threadId: firstThreadId,
           providerSessionId,
-          modelSelection,
+          modelSelection: scopedSelection,
           runtimePolicy,
         });
         assert.equal((yield* Ref.get(state)).openCount, 2);
@@ -4636,6 +4670,44 @@ it.effect(
       });
       assert.isFalse(denied?.capabilities?.has("device"));
     }),
+);
+
+it.effect("ProviderSessionManagerV2 refuses a legacy global session for a profiled project", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const projectId = ProjectId.make("project-profiled-legacy-provider");
+    const threadId = ThreadId.make("thread-profiled-legacy-provider");
+    const error = yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, projectId, now })],
+      });
+      return yield* manager
+        .open({ threadId, providerSessionId, modelSelection, runtimePolicy })
+        .pipe(Effect.flip);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 1_000,
+          serverSettingsLayer: ServerSettings.layerTest({
+            projectProfiles: { [projectId]: "work" },
+          }),
+        }),
+      ),
+    );
+
+    assert.equal(error._tag, "ProviderSessionOpenError");
+    assert.include(String(error.cause), "active profile");
+    assert.equal((yield* Ref.get(state)).openCount, 0);
+  }),
 );
 
 // Device instructions reach delegated children only because their own sessions hold `device`.

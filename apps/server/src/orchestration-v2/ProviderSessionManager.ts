@@ -1,6 +1,7 @@
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import { routeProfileProviderSelection } from "./profileProviderRouting.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { resolveProjectToolAccess } from "@t3tools/shared/projectSettings";
 import {
   isOrchestrationV2WorkActive,
   ModelSelection,
@@ -43,7 +44,6 @@ import {
   withMetrics,
 } from "../observability/Metrics.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
-import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
@@ -51,6 +51,7 @@ import * as EventSink from "./EventSink.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -380,24 +381,21 @@ export const layerWithOptions = (
           return yield* Effect.gen(function* () {
             const settings = yield* serverSettings.value.getSettings;
             const thread = yield* projectionStore.getThread(threadId);
-            const entries = Object.values(settings.projectSettingsOverrides);
-            const browserOverridden = entries.some(
-              (entry) => entry.enableAgentBrowserAccess !== undefined,
-            );
-            const deviceOverridden = entries.some(
-              (entry) => entry.enableAgentDeviceAccess !== undefined,
-            );
+            const effective = resolveProjectToolAccess(settings, thread.projectId);
+            const projectOverrides = settings.projectSettingsOverrides[thread.projectId];
+            const browserOverridden = projectOverrides?.enableAgentBrowserAccess !== undefined;
+            const deviceOverridden = projectOverrides?.enableAgentDeviceAccess !== undefined;
             if (browserOverridden || deviceOverridden) {
               const project = Option.isSome(projectService)
                 ? yield* projectService.value.getById(thread.projectId)
                 : Option.none();
-              if (Option.isNone(project))
+              if (Option.isNone(project)) {
                 return {
-                  browser: browserOverridden ? false : settings.enableAgentBrowserAccess,
-                  device: deviceOverridden ? false : settings.enableAgentDeviceAccess,
+                  browser: browserOverridden ? false : effective.enableAgentBrowserAccess,
+                  device: deviceOverridden ? false : effective.enableAgentDeviceAccess,
                 };
+              }
             }
-            const effective = resolveProjectSettings(settings, thread.projectId).settings;
             return {
               browser: effective.enableAgentBrowserAccess,
               device: effective.enableAgentDeviceAccess,
@@ -2406,6 +2404,34 @@ export const layerWithOptions = (
           sessionOpen.withLock(
             input.providerSessionId,
             Effect.gen(function* () {
+              if (Option.isSome(serverSettings)) {
+                const [settings, thread] = yield* Effect.all([
+                  serverSettings.value.getSettings,
+                  projectionStore.getThread(input.threadId),
+                ]).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderSessionOpenError({
+                        instanceId: input.modelSelection.instanceId,
+                        providerSessionId: input.providerSessionId,
+                        cause,
+                      }),
+                  ),
+                );
+                const routed = routeProfileProviderSelection(
+                  settings,
+                  thread.projectId,
+                  input.modelSelection,
+                );
+                if (routed === undefined || routed.instanceId !== input.modelSelection.instanceId) {
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause:
+                      "Provider session selection does not match the project's active profile.",
+                  });
+                }
+              }
               const cwd = input.runtimePolicy.cwd;
               if (cwd !== null) {
                 const workspaceIsDirectory = yield* fileSystem.stat(cwd).pipe(

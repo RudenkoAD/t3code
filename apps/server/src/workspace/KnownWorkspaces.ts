@@ -13,6 +13,7 @@ import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as RepositoryLocator from "../vcs/RepositoryLocator.ts";
 import { isFilesystemRoot, managedWorktreesDirectories } from "../worktreesDirectory.ts";
 
 export class UnknownWorkspaceError extends Schema.TaggedError<UnknownWorkspaceError>()(
@@ -55,6 +56,11 @@ export const make = Effect.gen(function* () {
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const sql = yield* SqlClient.SqlClient;
   const git = yield* GitVcsDriver.GitVcsDriver;
+
+  const isArcRepository = (cwd: string) =>
+    RepositoryLocator.locateRepositoryMarker(cwd, fileSystem, path).pipe(
+      Effect.map((marker) => marker?.kind === "arc"),
+    );
 
   // Missing roots keep lexical paths; other resolution failures and filesystem roots grant nothing.
   const resolveRoot = (value: string) => {
@@ -110,6 +116,10 @@ export const make = Effect.gen(function* () {
         if (project === undefined) return false;
         let listed = projectWorktrees.get(projectId);
         if (listed === undefined) {
+          if (yield* isArcRepository(project.workspaceRoot)) {
+            projectWorktrees.set(projectId, []);
+            return false;
+          }
           listed = yield* git.listWorktreePaths(project.workspaceRoot).pipe(
             Effect.flatMap((paths) => Effect.forEach(paths, resolveRoot)),
             Effect.map((paths) => paths.filter((listedPath) => listedPath !== null)),

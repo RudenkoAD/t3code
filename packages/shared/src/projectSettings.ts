@@ -6,6 +6,8 @@ import {
   type ProjectId,
   type ProjectScopedServerSettingKey,
   type ProjectSettingsOverrides,
+  resolveProjectProfile,
+  resolveProjectProviderInstanceId,
   resolveProjectProviderInstanceEnabled,
   resolveTextGenerationSelectionEnabled,
   type ResolvedServerSettings,
@@ -27,6 +29,25 @@ export interface ResolvedProjectSettings<Settings extends ServerSettings = Serve
   readonly settings: Settings;
   readonly sources: ProjectSettingSources;
   readonly overrides: ProjectSettingsOverrides;
+}
+
+/** Resolves built-in agent tools: environment defaults, then profile policy, then project policy. */
+export function resolveProjectToolAccess(
+  settings: ServerSettings,
+  projectId: ProjectId | null,
+): { readonly enableAgentBrowserAccess: boolean; readonly enableAgentDeviceAccess: boolean } {
+  const profile = settings.profileToolAccess[resolveProjectProfile(settings, projectId)];
+  const project = projectId === null ? undefined : settings.projectSettingsOverrides[projectId];
+  return {
+    enableAgentBrowserAccess:
+      project?.enableAgentBrowserAccess ??
+      profile?.enableAgentBrowserAccess ??
+      settings.enableAgentBrowserAccess,
+    enableAgentDeviceAccess:
+      project?.enableAgentDeviceAccess ??
+      profile?.enableAgentDeviceAccess ??
+      settings.enableAgentDeviceAccess,
+  };
 }
 
 const EMPTY_OVERRIDES: ProjectSettingsOverrides = {};
@@ -68,8 +89,56 @@ export function resolveProjectSettings(
   project?: LegacyProjectSettingsFields | null,
   projectFile?: T3ProjectFile | null,
 ): ResolvedProjectSettings {
-  const resolved = resolveProjectOverrides(settings, projectId, project);
+  const resolved = resolveProjectProviderSelections(
+    resolveProjectOverrides(settings, projectId, project),
+    settings,
+    projectId,
+  );
   return projectFile === undefined ? resolved : applyProjectFile(resolved, projectFile);
+}
+
+function resolveProjectProviderSelections(
+  resolved: ResolvedProjectSettings,
+  settings: ServerSettings,
+  projectId: ProjectId | null,
+): ResolvedProjectSettings {
+  if (projectId === null) return resolved;
+  let effective: Record<string, unknown> | null = null;
+  const selection = (key: "defaultModelSelection" | "textGenerationModelSelection") => {
+    const current = resolved.settings[key];
+    if (current == null) return;
+    const instanceId = resolveProjectProviderInstanceId(settings, projectId, current.instanceId);
+    if (instanceId === undefined || instanceId === current.instanceId) return;
+    effective ??= { ...resolved.settings };
+    effective[key] = { ...current, instanceId };
+  };
+  selection("defaultModelSelection");
+  selection("textGenerationModelSelection");
+
+  const currentTextGeneration = (effective ?? resolved.settings)
+    .textGenerationModelSelection as ModelSelection;
+  if (
+    !resolveTextGenerationSelectionEnabled(settings, projectId, currentTextGeneration.instanceId)
+  ) {
+    const fallback = fallbackTextGenerationModelSelection(
+      settings.providerInstances,
+      (instanceId) => resolveProjectProviderInstanceEnabled(settings, projectId, instanceId),
+      {
+        includeConfiguredInstances: true,
+        defaultModelSelection:
+          ((effective ?? resolved.settings).defaultModelSelection as ModelSelection | null) ?? null,
+      },
+    );
+    const scopedFallback =
+      fallback === null
+        ? undefined
+        : resolveProjectProviderInstanceId(settings, projectId, fallback.instanceId);
+    if (fallback !== null && scopedFallback !== undefined) {
+      effective ??= { ...resolved.settings };
+      effective.textGenerationModelSelection = { ...fallback, instanceId: scopedFallback };
+    }
+  }
+  return effective === null ? resolved : { ...resolved, settings: effective as ServerSettings };
 }
 
 function applyProjectFile(

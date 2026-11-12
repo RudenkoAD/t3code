@@ -2,6 +2,8 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderInstanceId,
+  profileProviderInstanceBaseId,
+  profileProviderInstanceId,
   providerInstanceConfigEnabledFlag,
   resolveProviderInstanceEnabled,
   type ProviderInstanceConfig,
@@ -54,6 +56,22 @@ export const deriveProviderInstanceConfigMap = (
 ): ProviderInstanceConfigMap => {
   const merged: Record<string, ProviderInstanceConfig> = { ...settings.providerInstances };
 
+  for (const profile of ["work", "personal"] as const) {
+    const profileSettings = settings.profileProviderSettings[profile];
+    const codexId = profileProviderInstanceId(profile, ProviderInstanceId.make("codex"));
+    const claudeId = profileProviderInstanceId(profile, ProviderInstanceId.make("claudeAgent"));
+    merged[codexId] = {
+      driver: ProviderDriverKind.make("codex"),
+      displayName: `${profile === "work" ? "Work" : "Personal"} Codex`,
+      enabled: profileSettings.codexEnabled,
+    };
+    merged[claudeId] = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      displayName: `${profile === "work" ? "Work" : "Personal"} Claude`,
+      enabled: profileSettings.claudeEnabled,
+    };
+  }
+
   for (const driver of BUILT_IN_DRIVERS) {
     if (driver.metadata.hasDefaultInstance === false) continue;
     const instanceId = defaultInstanceIdForDriver(driver.driverKind);
@@ -68,6 +86,7 @@ export const deriveProviderInstanceConfigMap = (
     )) {
       if (projectOverride.enabled !== true) continue;
       const instanceId = rawInstanceId as ProviderInstanceId;
+      if (profileProviderInstanceBaseId(instanceId) !== undefined) continue;
       const existing = merged[instanceId];
       if (existing === undefined || resolveProviderInstanceEnabled(existing)) continue;
       merged[instanceId] = {

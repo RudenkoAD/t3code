@@ -324,6 +324,9 @@ export function mergeGitStatusParts(
 
 function toRemoteStatusPart(status: VcsStatusResult): VcsStatusRemoteResult {
   return {
+    ...(status.trackingCountsKnown === undefined
+      ? {}
+      : { trackingCountsKnown: status.trackingCountsKnown }),
     hasUpstream: status.hasUpstream,
     aheadCount: status.aheadCount,
     behindCount: status.behindCount,
@@ -336,6 +339,7 @@ function toRemoteStatusPart(status: VcsStatusResult): VcsStatusRemoteResult {
 
 function toLocalStatusPart(status: VcsStatusResult): VcsStatusLocalResult {
   return {
+    ...(status.vcsKind === undefined ? {} : { vcsKind: status.vcsKind }),
     isRepo: status.isRepo,
     ...(status.sourceControlProvider
       ? { sourceControlProvider: status.sourceControlProvider }

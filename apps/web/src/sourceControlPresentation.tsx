@@ -47,14 +47,33 @@ function presentDefinition(
   };
 }
 
+function presentArcanum(providerName = "Arcanum"): SourceControlPresentation {
+  const definition = sourceControlClients.get("arcanum");
+  return {
+    definition,
+    providerName,
+    terminology: {
+      shortLabel: "review",
+      shortLabelWithArticle: "a review",
+      singular: "review",
+      plural: "reviews",
+    },
+    Icon: sourceControlIcon(definition),
+  };
+}
+
 export function getSourceControlPresentation(
   provider: SourceControlProviderInfo | null | undefined,
 ): SourceControlPresentation {
+  if (provider?.kind === "arcanum") {
+    return presentArcanum(provider.name || "Arcanum");
+  }
   const definition = sourceControlClients.get(provider?.kind);
   return presentDefinition(definition, provider?.name || definition.label);
 }
 
 export function getSourceControlPresentationForKind(kind: string): SourceControlPresentation {
+  if (kind === "arcanum") return presentArcanum();
   const definition = sourceControlClients.get(kind);
   return presentDefinition(definition, definition.label);
 }
