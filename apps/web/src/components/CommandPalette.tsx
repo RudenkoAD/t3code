@@ -128,7 +128,7 @@ import { useStartTriage } from "../hooks/useStartTriage";
 import { pickTriageEnvironment } from "../lib/triageTarget";
 import { useNewProject } from "../hooks/useNewProject";
 import { useProjectProfileView } from "./ProjectProfileSelector";
-import { profileViewIncludesMembers } from "../projectProfileView";
+import { profileForNewProject, profileViewIncludesMembers } from "../projectProfileView";
 import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
 import { reportProjectFailure, useProjectPin } from "../hooks/useProjectGroupUpdate";
 import {
@@ -446,7 +446,7 @@ function OpenCommandPaletteDialog(props: {
   }
   const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
   const [projectProfileView] = useProjectProfileView();
-  const projectProfile = projectProfileView === "all" ? "personal" : projectProfileView;
+  const projectProfile = profileForNewProject(projectProfileView);
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -1840,7 +1840,7 @@ function OpenCommandPaletteDialog(props: {
     readonly rawCwd: string;
     readonly platform: string;
     readonly currentProjectCwd: string | null;
-    readonly profile: "work" | "personal";
+    readonly profile?: "work" | "personal";
   }) => {
     const environment = environments.find(
       (candidate) => candidate.environmentId === input.environmentId,
@@ -1945,7 +1945,7 @@ function OpenCommandPaletteDialog(props: {
         workspaceRoot: cwd,
         createWorkspaceRootIfMissing: true,
         defaultModelSelection: null,
-        profile: input.profile,
+        ...(input.profile ? { profile: input.profile } : {}),
       },
     });
     if (createResult._tag === "Failure") {
@@ -1986,7 +1986,7 @@ function OpenCommandPaletteDialog(props: {
       rawCwd,
       platform: browseEnvironmentPlatform,
       currentProjectCwd: currentProjectCwdForBrowse,
-      profile: projectProfile,
+      ...(projectProfile ? { profile: projectProfile } : {}),
     });
   };
 
@@ -2013,7 +2013,7 @@ function OpenCommandPaletteDialog(props: {
       createNewProject({
         environmentId: newProjectFlow.environmentId,
         name: newProjectName,
-        profile: projectProfile,
+        ...(projectProfile ? { profile: projectProfile } : {}),
         publishTo: newProjectPublishes ? newProjectPublishTarget : null,
       }),
     );
@@ -2196,7 +2196,7 @@ function OpenCommandPaletteDialog(props: {
         createdAt: new Date().toISOString(),
         remoteUrl: addProjectCloneFlow.remoteUrl,
         destinationPath,
-        profile: projectProfile,
+        ...(projectProfile ? { profile: projectProfile } : {}),
       },
     });
     setIsRemoteProjectCloning(false);
@@ -2804,7 +2804,7 @@ function OpenCommandPaletteDialog(props: {
         rawCwd: selection.linuxPath,
         platform: "Linux",
         currentProjectCwd: null,
-        profile: projectProfile,
+        ...(projectProfile ? { profile: projectProfile } : {}),
       });
       return;
     }

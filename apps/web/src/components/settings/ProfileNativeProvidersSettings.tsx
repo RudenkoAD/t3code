@@ -1,9 +1,13 @@
-import type { ProjectProfile } from "@t3tools/contracts";
-import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+import type { EnvironmentId, ProfileMcpInventoryResult, ProjectProfile } from "@t3tools/contracts";
+import { useState } from "react";
+import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
+import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 import { toastManager } from "../ui/toast";
+import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 
 function joinHome(base: string, ...segments: string[]) {
   const separator = base.includes("\\") ? "\\" : "/";
@@ -17,13 +21,21 @@ function shellQuote(value: string) {
 export function ProfileNativeProvidersSettings({
   profile,
   profileHomeDirectory,
+  environmentId,
 }: {
   readonly profile: ProjectProfile;
   readonly profileHomeDirectory?: string;
+  readonly environmentId?: EnvironmentId;
 }) {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const providerSettings = settings.profileProviderSettings[profile];
+  const readInventory = useAtomCommand(serverEnvironment.profileMcpInventory, {
+    reportFailure: false,
+  });
+  const [inventory, setInventory] = useState<ProfileMcpInventoryResult | null>(null);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [inventoryError, setInventoryError] = useState(false);
   const codexHome = profileHomeDirectory ? joinHome(profileHomeDirectory, profile, "codex") : null;
   const claudeHome = profileHomeDirectory
     ? joinHome(profileHomeDirectory, profile, "claude")
@@ -39,6 +51,18 @@ export function ProfileNativeProvidersSettings({
       () => toastManager.add({ type: "success", title: `${target} copied` }),
       () => toastManager.add({ type: "error", title: `Could not copy ${target}` }),
     );
+  };
+
+  const refreshInventory = async () => {
+    if (!environmentId || inventoryLoading) return;
+    setInventoryLoading(true);
+    setInventoryError(false);
+    const result = await readInventory({ environmentId, input: { scope: profile } });
+    if (result._tag === "Success") setInventory(result.value);
+    else if (!isAtomCommandInterrupted(result)) {
+      setInventoryError(true);
+    }
+    setInventoryLoading(false);
   };
 
   return (
@@ -74,31 +98,119 @@ export function ProfileNativeProvidersSettings({
         </p>
       ) : null}
       {codexHome && claudeHome ? (
-        <div className="space-y-2 rounded-md bg-muted/40 p-3">
-          <h4 className="text-sm font-medium">Add an MCP server</h4>
-          <p className="text-xs text-muted-foreground">
-            Use the matching profile home in the command. Replace placeholders with your MCP server
-            name, transport details and URL.
-          </p>
-          <div className="grid gap-2 @md/settings:grid-cols-2">
-            <SetupCommand
-              name="Codex"
-              command={`CODEX_HOME=${shellQuote(codexHome)} codex mcp add my-server --url https://example.org/mcp`}
-              onCopy={copySetup}
-              docsUrl="https://developers.openai.com/codex/mcp"
-              docsLabel="Codex MCP docs"
-            />
-            <SetupCommand
-              name="Claude Code"
-              command={`CLAUDE_CONFIG_DIR=${shellQuote(claudeHome)} claude mcp add --transport http --scope user my-server https://example.org/mcp`}
-              onCopy={copySetup}
-              docsUrl="https://code.claude.com/docs/en/mcp"
-              docsLabel="Claude Code MCP docs"
-            />
+        <div className="space-y-3">
+          <div className="space-y-2 rounded-md bg-muted/40 p-3">
+            <h4 className="text-sm font-medium">Sign in to the native provider</h4>
+            <p className="text-xs text-muted-foreground">
+              These commands sign in only to the selected profile’s isolated home.
+            </p>
+            <div className="grid gap-2 @md/settings:grid-cols-2">
+              <SetupCommand
+                name="Codex sign in"
+                command={`CODEX_HOME=${shellQuote(codexHome)} codex login`}
+                onCopy={copySetup}
+              />
+              <SetupCommand
+                name="Claude Code sign in"
+                command={`CLAUDE_CONFIG_DIR=${shellQuote(claudeHome)} claude auth login`}
+                onCopy={copySetup}
+              />
+            </div>
+          </div>
+          <div className="space-y-2 rounded-md bg-muted/40 p-3">
+            <h4 className="text-sm font-medium">Add an MCP server</h4>
+            <p className="text-xs text-muted-foreground">
+              Use the matching profile home in the command. Replace placeholders with your MCP
+              server name, transport details and URL.
+            </p>
+            <div className="grid gap-2 @md/settings:grid-cols-2">
+              <SetupCommand
+                name="Codex"
+                command={`CODEX_HOME=${shellQuote(codexHome)} codex mcp add my-server --url https://example.org/mcp`}
+                onCopy={copySetup}
+                docsUrl="https://developers.openai.com/codex/mcp"
+                docsLabel="Codex MCP docs"
+              />
+              <SetupCommand
+                name="Claude Code"
+                command={`CLAUDE_CONFIG_DIR=${shellQuote(claudeHome)} claude mcp add --transport http --scope user my-server https://example.org/mcp`}
+                onCopy={copySetup}
+                docsUrl="https://code.claude.com/docs/en/mcp"
+                docsLabel="Claude Code MCP docs"
+              />
+            </div>
           </div>
         </div>
       ) : null}
+      <section className="space-y-2 rounded-md border p-3" aria-label="Configured MCP servers">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h4 className="text-sm font-medium">Configured MCP servers</h4>
+            <p className="text-xs text-muted-foreground">
+              Names and enabled state from this profile’s Codex and Claude configuration.
+            </p>
+          </div>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={!environmentId || inventoryLoading}
+            onClick={() => void refreshInventory()}
+          >
+            {inventoryLoading ? "Refreshing…" : "Refresh"}
+          </Button>
+        </div>
+        {!environmentId ? (
+          <p className="text-xs text-muted-foreground">
+            Select a connected environment to inspect its profile.
+          </p>
+        ) : inventoryError ? (
+          <p role="alert" className="text-xs text-destructive">
+            Could not read MCP configuration. Try refreshing.
+          </p>
+        ) : inventory === null ? (
+          <p className="text-xs text-muted-foreground">Refresh to inspect configured servers.</p>
+        ) : (
+          <div className="grid gap-2 @md/settings:grid-cols-2">
+            <InventoryProvider name="Codex" provider={inventory.codex} />
+            <InventoryProvider name="Claude Code" provider={inventory.claude} />
+          </div>
+        )}
+      </section>
     </section>
+  );
+}
+
+function InventoryProvider({
+  name,
+  provider,
+}: {
+  readonly name: string;
+  readonly provider: ProfileMcpInventoryResult["codex"];
+}) {
+  const statusLabel = {
+    missing: "Configuration file missing",
+    empty: "No MCP servers configured",
+    configured: "Configured servers",
+    parse_error: "Configuration could not be read",
+  }[provider.status];
+  return (
+    <div className="min-w-0 rounded-md border p-2">
+      <div className="text-xs font-medium">{name}</div>
+      {provider.servers.length ? (
+        <ul className="mt-1 space-y-1 text-xs">
+          {provider.servers.map((server) => (
+            <li key={server.name} className="flex items-center justify-between gap-2">
+              <span className="truncate">{server.name}</span>
+              <span className="shrink-0 text-muted-foreground">
+                {server.enabled ? "Enabled" : "Disabled"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-1 text-xs text-muted-foreground">{statusLabel}</p>
+      )}
+    </div>
   );
 }
 
@@ -139,8 +251,8 @@ function SetupCommand({
   readonly name: string;
   readonly command: string;
   readonly onCopy: (command: string, target: string) => void;
-  readonly docsUrl: string;
-  readonly docsLabel: string;
+  readonly docsUrl?: string;
+  readonly docsLabel?: string;
 }) {
   return (
     <div className="min-w-0 space-y-2 rounded-md border bg-background p-2">
@@ -150,14 +262,16 @@ function SetupCommand({
         <Button size="xs" variant="outline" onClick={() => onCopy(command, `${name} MCP command`)}>
           Copy command
         </Button>
-        <a
-          className="text-xs text-primary underline-offset-4 hover:underline"
-          href={docsUrl}
-          target="_blank"
-          rel="noreferrer"
-        >
-          {docsLabel}
-        </a>
+        {docsUrl && docsLabel ? (
+          <a
+            className="text-xs text-primary underline-offset-4 hover:underline"
+            href={docsUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {docsLabel}
+          </a>
+        ) : null}
       </div>
     </div>
   );

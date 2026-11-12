@@ -1205,6 +1205,10 @@ export function createServerEnvironmentAtoms<R, E>(
 
   return {
     configValueAtom,
+    profileMcpInventory: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:profile-mcp-inventory",
+      tag: WS_METHODS.profileMcpInventory,
+    }),
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,

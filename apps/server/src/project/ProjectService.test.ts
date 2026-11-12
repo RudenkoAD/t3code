@@ -4,10 +4,12 @@ import * as Queue from "effect/Queue";
 import * as Tracer from "effect/Tracer";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CommandId, type Project, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
@@ -621,6 +623,88 @@ it.layer(layerTest)("ProjectService", (it) => {
     }),
   );
 });
+
+it.effect(
+  "infers Work for Arc projects, defaults others to Personal, and honors explicit profiles",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.ProjectService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-project-profile-" });
+      const arcRoot = `${root}/arc-repo`;
+      const arcProject = `${arcRoot}/nested/project`;
+      yield* fileSystem.makeDirectory(arcProject, { recursive: true });
+      yield* fileSystem.writeFileString(`${arcRoot}/.arcadia.root`, "");
+
+      const workProjectId = ProjectId.make("project:inferred-work");
+      yield* service.create({
+        commandId: CommandId.make("command:inferred-work"),
+        projectId: workProjectId,
+        title: "Nested Arc project",
+        workspaceRoot: arcProject,
+      });
+      assert.equal((yield* settings.getSettings).projectProfiles[workProjectId], "work");
+
+      const nestedGitProject = `${arcRoot}/nested/personal-git`;
+      yield* fileSystem.makeDirectory(nestedGitProject, { recursive: true });
+      yield* fileSystem.writeFileString(`${nestedGitProject}/.git`, "gitdir: /tmp/gitdir\n");
+      const nestedGitProjectId = ProjectId.make("project:nested-git-personal");
+      yield* service.create({
+        commandId: CommandId.make("command:nested-git-personal"),
+        projectId: nestedGitProjectId,
+        title: "Nested Git project",
+        workspaceRoot: nestedGitProject,
+      });
+      assert.equal((yield* settings.getSettings).projectProfiles[nestedGitProjectId], "personal");
+
+      const alias = `${root}/arc-alias`;
+      const symlinkProjectPath = `${arcRoot}/nested/symlink-project`;
+      yield* fileSystem.makeDirectory(symlinkProjectPath, { recursive: true });
+      yield* fileSystem.symlink(arcRoot, alias);
+      const symlinkProjectId = ProjectId.make("project:inferred-work-symlink");
+      yield* service.create({
+        commandId: CommandId.make("command:inferred-work-symlink"),
+        projectId: symlinkProjectId,
+        title: "Symlinked Arc project",
+        workspaceRoot: `${alias}/nested/symlink-project`,
+      });
+      assert.equal((yield* settings.getSettings).projectProfiles[symlinkProjectId], "work");
+
+      const gitRoot = `${root}/git-repo`;
+      yield* fileSystem.makeDirectory(`${gitRoot}/.git`, { recursive: true });
+      const personalProjectId = ProjectId.make("project:inferred-personal");
+      yield* service.create({
+        commandId: CommandId.make("command:inferred-personal"),
+        projectId: personalProjectId,
+        title: "Git project",
+        workspaceRoot: gitRoot,
+      });
+      assert.equal((yield* settings.getSettings).projectProfiles[personalProjectId], "personal");
+
+      const explicitPersonalId = ProjectId.make("project:explicit-personal-in-arc");
+      const explicitPersonalPath = `${arcRoot}/nested/explicit-personal`;
+      yield* fileSystem.makeDirectory(explicitPersonalPath, { recursive: true });
+      const explicitInput = {
+        commandId: CommandId.make("command:explicit-personal-in-arc"),
+        projectId: explicitPersonalId,
+        title: "Explicit Personal in Arc",
+        workspaceRoot: explicitPersonalPath,
+        profile: "personal" as const,
+      };
+      yield* service.create(explicitInput);
+      assert.equal((yield* settings.getSettings).projectProfiles[explicitPersonalId], "personal");
+
+      const retry = {
+        commandId: explicitInput.commandId,
+        projectId: explicitInput.projectId,
+        title: explicitInput.title,
+        workspaceRoot: explicitInput.workspaceRoot,
+      };
+      yield* service.create(retry);
+      assert.equal((yield* settings.getSettings).projectProfiles[explicitPersonalId], "personal");
+    }).pipe(Effect.provide(Layer.merge(layerTest, NodeFileSystem.layer))),
+);
 
 it.effect("keeps project snapshots available when optional metadata enrichment fails", () =>
   Effect.gen(function* () {

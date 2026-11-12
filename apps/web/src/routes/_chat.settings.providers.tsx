@@ -9,20 +9,12 @@ import { SettingsPageContainer, SettingsSection } from "../components/settings/s
 import { useSettingsScope } from "../components/settings/SettingsScopeContext";
 import { Button } from "../components/ui/button";
 import { useNavigate } from "@tanstack/react-router";
-import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 
 function SettingsProvidersRoute() {
   const target = Route.useSearch();
   const navigate = useNavigate();
   const { environment, scope } = useSettingsScope();
-  const { environments } = useEnvironments();
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const profileHomeDirectory =
-    environment?.serverConfig?.profileHomeDirectory ??
-    environments.find((candidate) => candidate.environmentId === primaryEnvironmentId)?.serverConfig
-      ?.profileHomeDirectory ??
-    environments.find((candidate) => candidate.serverConfig?.profileHomeDirectory)?.serverConfig
-      ?.profileHomeDirectory;
+  const profileHomeDirectory = environment?.serverConfig?.profileHomeDirectory;
   const setProfile = (profile: ProjectProfile | undefined) => {
     void navigate({
       to: "/settings/providers",
@@ -72,7 +64,9 @@ function SettingsProvidersRoute() {
           <div className="p-3 pt-0">
             <div className="mb-3">
               <ProfileNativeProvidersSettings
+                key={`${environment?.environmentId ?? "none"}-${selectedProfile}`}
                 profile={selectedProfile}
+                {...(environment ? { environmentId: environment.environmentId } : {})}
                 {...(profileHomeDirectory ? { profileHomeDirectory } : {})}
               />
             </div>

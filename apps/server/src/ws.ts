@@ -21,6 +21,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
+import { readProfileMcpInventory } from "./provider/ProfileMcpInventory.ts";
 import {
   AcpRegistryOperationError,
   CommandId,
@@ -2398,6 +2399,17 @@ export const layerWsRpc = (
             workspaceSnapshotsOnDemand: false,
             deferNetworkDiscovery: false,
           }),
+        [WS_METHODS.profileMcpInventory]: (input) => {
+          const config = Effect.gen(function* () {
+            const serverConfig = yield* ServerConfig.ServerConfig;
+            const path = yield* Path.Path;
+            return yield* readProfileMcpInventory(
+              input,
+              path.join(serverConfig.stateDir, "profiles"),
+            );
+          });
+          return config;
+        },
         [WS_METHODS.serverSearchAcpRegistry]: (input) =>
           acpRegistryCatalog
             .search(input)

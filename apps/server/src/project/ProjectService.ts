@@ -16,6 +16,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
@@ -37,6 +38,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import * as RepositoryLocator from "../vcs/RepositoryLocator.ts";
 
 export interface ProjectCreateInput extends ProjectCreatePayload {
   readonly commandId: CommandId;
@@ -182,6 +184,7 @@ export const make = Effect.gen(function* () {
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
   const projectLocks = yield* KeyedLock.make<ProjectId>();
   const workspaceLocks = yield* KeyedLock.make<string>();
@@ -208,10 +211,10 @@ export const make = Effect.gen(function* () {
   });
 
   const hydrate = Effect.fn("ProjectService.hydrate")(function* (row: ProjectStore.ProjectRow) {
+    // Deleted rows are returned by delete retries; their optional enrichment cache can change
+    // asynchronously after the first delete, which would make an idempotent retry vary by timing.
     const enrichment =
-      row.deletedAt === null
-        ? yield* projectEnrichment.getAvailable(row.workspaceRoot)
-        : yield* projectEnrichment.peek(row.workspaceRoot);
+      row.deletedAt === null ? yield* projectEnrichment.getAvailable(row.workspaceRoot) : null;
     return toProject(row, enrichment);
   });
 
@@ -244,6 +247,13 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
+
+  const inferProjectProfile = Effect.fn("ProjectService.inferProjectProfile")(function* (
+    workspaceRoot: string,
+  ) {
+    const marker = yield* RepositoryLocator.locateRepositoryMarker(workspaceRoot, fileSystem, path);
+    return marker?.kind === "arc" ? ("work" as const) : ("personal" as const);
+  });
 
   const commit = Effect.fn("ProjectService.commit")(function* (command: ProjectCommand) {
     const { projectId } = command;
@@ -402,12 +412,24 @@ export const make = Effect.gen(function* () {
         workspaceRoot: input.workspaceRoot,
         createIfMissing: input.createWorkspaceRootIfMissing ?? false,
       });
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProjectOperationError({
+              operation: "dispatch-project-command",
+              projectId: input.projectId,
+              cause,
+            }),
+        ),
+      );
+      const storedProfile = settings.projectProfiles[input.projectId];
+      const profile = input.profile ?? storedProfile ?? (yield* inferProjectProfile(workspaceRoot));
       yield* commit({
         type: "project.create",
         commandId: input.commandId,
         projectId: input.projectId,
         title: input.title,
-        ...(input.profile === undefined ? {} : { profile: input.profile }),
+        profile,
         workspaceRoot,
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
       });

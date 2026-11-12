@@ -2,14 +2,17 @@
 
 ## Work and Personal profiles
 
-Select **Work** or **Personal** in the sidebar before adding a project. Existing projects
-start in **Personal**. Use a project's context menu to move it between profiles. All chats in
-that project use its profile for provider and tool settings.
+When adding a folder from **All profiles**, T3 assigns an Arc checkout to **Work** and other
+folders to **Personal**. Select **Work** or **Personal** first to choose the profile yourself.
+Existing projects keep their assignment, with **Personal** as the default for earlier versions.
+Use a project's context menu to move all its chats to the other profile.
 
 Open **Settings → Providers** and choose **Work tools** or **Personal tools**. Each profile
 has its own Codex and Claude Code configuration directory on the machine running T3.
 These are the two providers available in profile-scoped chats.
-The settings show the exact directories. Configure a user-level MCP server from a terminal
+Use **Configured MCP servers → Refresh** to see the server names in both providers’ files
+on the selected machine. Each provider also has a sign-in command for its profile directory.
+Configure a user-level MCP server from a terminal
 using the directory of the profile that should have access to it. For example, with the
 default desktop data location:
 
