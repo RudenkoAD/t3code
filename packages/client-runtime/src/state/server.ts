@@ -1209,6 +1209,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:profile-mcp-inventory",
       tag: WS_METHODS.profileMcpInventory,
     }),
+    profileSetMcpServerEnabled: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:profile-set-mcp-server-enabled",
+      tag: WS_METHODS.profileSetMcpServerEnabled,
+    }),
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,

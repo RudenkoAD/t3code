@@ -38,7 +38,12 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { ArcActionProgressEvent, ArcRunActionInput, ArcWorkflowError } from "./arc.ts";
-import { ProfileMcpInventoryInput, ProfileMcpInventoryResult } from "./profileMcpInventory.ts";
+import {
+  ProfileMcpInventoryInput,
+  ProfileMcpInventoryResult,
+  ProfileMcpServerToggleError,
+  ProfileSetMcpServerEnabledInput,
+} from "./profileMcpInventory.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ProviderAuthCancelInput,
@@ -509,6 +514,7 @@ export const WS_METHODS = {
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
   profileMcpInventory: "profile.mcpInventory",
+  profileSetMcpServerEnabled: "profile.setMcpServerEnabled",
   serverGetNpmRelease: "server.getNpmRelease",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
@@ -658,6 +664,12 @@ const WsProfileMcpInventoryRpc = Rpc.make(WS_METHODS.profileMcpInventory, {
   payload: ProfileMcpInventoryInput,
   success: ProfileMcpInventoryResult,
   error: EnvironmentAuthorizationError,
+});
+
+const WsProfileSetMcpServerEnabledRpc = Rpc.make(WS_METHODS.profileSetMcpServerEnabled, {
+  payload: ProfileSetMcpServerEnabledInput,
+  success: ProfileMcpInventoryResult,
+  error: Schema.Union([ProfileMcpServerToggleError, EnvironmentAuthorizationError]),
 });
 
 export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
@@ -2086,6 +2098,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsProfileMcpInventoryRpc,
+  WsProfileSetMcpServerEnabledRpc,
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,

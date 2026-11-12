@@ -73,6 +73,7 @@
     "smol-toml": "1.9.1",
     "stream-chain": "^4.2.5",
     "stream-json": "3.7.0",
+    "toml-eslint-parser": "^1.0.3",
     "transcribe-cpp": "0.4.1",
     "undici": "catalog:",
     "yaml": "catalog:",

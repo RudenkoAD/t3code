@@ -10,11 +10,14 @@ Use a project's context menu to move all its chats to the other profile.
 Open **Settings → Providers** and choose **Work tools** or **Personal tools**. Each profile
 has its own Codex and Claude Code configuration directory on the machine running T3.
 These are the two providers available in profile-scoped chats.
-Use **Configured MCP servers → Refresh** to see the server names in both providers’ files
-on the selected machine. Each provider also has a sign-in command for its profile directory.
-Configure a user-level MCP server from a terminal
-using the directory of the profile that should have access to it. For example, with the
-default desktop data location:
+Under **Configured MCP servers**, switch an existing server on or off for Codex or Claude Code.
+Turning it back on restores its saved configuration. Restart the T3 server (quit and reopen
+the desktop app on a local Mac) to apply changes to active provider sessions.
+Use **Refresh** after editing a provider's file from the terminal. Each provider also has
+a sign-in command for its profile directory.
+
+To add a user-level MCP server, run the provider's command in a terminal with the
+corresponding profile directory. For example, with the default desktop data location:
 
 ```sh
 CODEX_HOME="$HOME/.t3/userdata/profiles/work/codex" codex mcp add my-server -- /path/to/server

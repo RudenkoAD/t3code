@@ -1,13 +1,26 @@
-import type { EnvironmentId, ProfileMcpInventoryResult, ProjectProfile } from "@t3tools/contracts";
-import { useState } from "react";
-import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
+import {
+  ProfileMcpServerToggleError,
+  type EnvironmentId,
+  type ProfileMcpInventoryResult,
+  type ProjectProfile,
+} from "@t3tools/contracts";
+import { useEffect, useRef, useState } from "react";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import { useAtomValue } from "@effect/atom-react";
+import * as Schema from "effect/Schema";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useStableCallback } from "../../hooks/useStableCallback";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 import { toastManager } from "../ui/toast";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+
+const isProfileMcpServerToggleError = Schema.is(ProfileMcpServerToggleError);
 
 function joinHome(base: string, ...segments: string[]) {
   const separator = base.includes("\\") ? "\\" : "/";
@@ -33,15 +46,41 @@ export function ProfileNativeProvidersSettings({
   const readInventory = useAtomCommand(serverEnvironment.profileMcpInventory, {
     reportFailure: false,
   });
-  const [inventory, setInventory] = useState<ProfileMcpInventoryResult | null>(null);
-  const [inventoryLoading, setInventoryLoading] = useState(false);
-  const [inventoryError, setInventoryError] = useState(false);
+  const setMcpServerEnabled = useAtomCommand(serverEnvironment.profileSetMcpServerEnabled, {
+    reportFailure: false,
+  });
+  const canManageProviders = useAtomValue(
+    serverEnvironment.profileSetMcpServerEnabled.permissionAtom(environmentId ?? null),
+  );
+  const [authoritativeInventory, setAuthoritativeInventory] = useState<{
+    readonly key: string;
+    readonly value: ProfileMcpInventoryResult;
+  } | null>(null);
+  const [loadingKey, setLoadingKey] = useState<string | null>(null);
+  const [errorState, setErrorState] = useState<{
+    readonly key: string;
+    readonly type: "read" | "write";
+    readonly message?: string;
+  } | null>(null);
+  const [busyServerKey, setBusyServerKey] = useState<string | null>(null);
+  const [mcpChangedKey, setMcpChangedKey] = useState<string | null>(null);
+  const busyServerRef = useRef(false);
+  const readRequestVersion = useRef(0);
+  const scopeKey = `${environmentId ?? "none"}:${profile}`;
+  const inventory = authoritativeInventory?.key === scopeKey ? authoritativeInventory.value : null;
+  const inventoryLoading = loadingKey === scopeKey;
+  const inventoryError = errorState?.key === scopeKey ? errorState.type : null;
+  const currentBusyServerKey = busyServerKey?.startsWith(`${scopeKey}:`)
+    ? busyServerKey.slice(scopeKey.length + 1)
+    : null;
+  const mcpChanged = mcpChangedKey === scopeKey;
   const codexHome = profileHomeDirectory ? joinHome(profileHomeDirectory, profile, "codex") : null;
   const claudeHome = profileHomeDirectory
     ? joinHome(profileHomeDirectory, profile, "claude")
     : null;
 
   const setEnabled = (key: "codexEnabled" | "claudeEnabled", enabled: boolean) => {
+    if (!canManageProviders) return;
     const patch = { [key]: enabled };
     updateSettings({ profileProviderSettings: { [profile]: patch } });
   };
@@ -53,16 +92,65 @@ export function ProfileNativeProvidersSettings({
     );
   };
 
-  const refreshInventory = async () => {
-    if (!environmentId || inventoryLoading) return;
-    setInventoryLoading(true);
-    setInventoryError(false);
-    const result = await readInventory({ environmentId, input: { scope: profile } });
-    if (result._tag === "Success") setInventory(result.value);
-    else if (!isAtomCommandInterrupted(result)) {
-      setInventoryError(true);
+  const refreshInventory = useStableCallback(async (key: string) => {
+    if (!environmentId || busyServerRef.current) return;
+    const version = ++readRequestVersion.current;
+    setLoadingKey(key);
+    setErrorState(null);
+    try {
+      const result = await readInventory({ environmentId, input: { scope: profile } });
+      if (readRequestVersion.current !== version) return;
+      if (result._tag === "Success") setAuthoritativeInventory({ key, value: result.value });
+      else if (!isAtomCommandInterrupted(result)) setErrorState({ key, type: "read" });
+    } catch {
+      if (readRequestVersion.current === version) setErrorState({ key, type: "read" });
     }
-    setInventoryLoading(false);
+    if (readRequestVersion.current === version) setLoadingKey(null);
+  });
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads the server-owned inventory on open/profile change
+  useEffect(() => {
+    void refreshInventory(scopeKey);
+    return () => {
+      readRequestVersion.current += 1;
+    };
+  }, [scopeKey, refreshInventory]);
+
+  const toggleMcpServer = async (provider: "codex" | "claude", name: string, enabled: boolean) => {
+    if (!environmentId || busyServerRef.current || !canManageProviders) return;
+    const key = `${scopeKey}:${provider}:${name}`;
+    busyServerRef.current = true;
+    readRequestVersion.current += 1;
+    setLoadingKey(null);
+    setBusyServerKey(key);
+    setErrorState(null);
+    try {
+      const result = await setMcpServerEnabled({
+        environmentId,
+        input: { scope: profile, provider, name, enabled },
+      });
+      if (result._tag === "Success") {
+        setAuthoritativeInventory({ key: scopeKey, value: result.value });
+        setMcpChangedKey(scopeKey);
+      } else if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setErrorState({
+          key: scopeKey,
+          type: "write",
+          message: isProfileMcpServerToggleError(error)
+            ? error.message
+            : "Could not update this MCP server. Check permissions and try again.",
+        });
+      }
+    } catch {
+      setErrorState({
+        key: scopeKey,
+        type: "write",
+        message: "Could not update this MCP server. Check permissions and try again.",
+      });
+    }
+    busyServerRef.current = false;
+    setBusyServerKey(null);
   };
 
   return (
@@ -81,6 +169,7 @@ export function ProfileNativeProvidersSettings({
             codexHome ?? "Select a connected environment to show its isolated home path."
           }
           enabled={providerSettings.codexEnabled}
+          disabled={!canManageProviders}
           onEnabledChange={(value) => setEnabled("codexEnabled", value)}
         />
         <ProviderRow
@@ -89,6 +178,7 @@ export function ProfileNativeProvidersSettings({
             claudeHome ?? "Select a connected environment to show its isolated home path."
           }
           enabled={providerSettings.claudeEnabled}
+          disabled={!canManageProviders}
           onEnabledChange={(value) => setEnabled("claudeEnabled", value)}
         />
       </div>
@@ -153,27 +243,54 @@ export function ProfileNativeProvidersSettings({
           <Button
             size="xs"
             variant="outline"
-            disabled={!environmentId || inventoryLoading}
-            onClick={() => void refreshInventory()}
+            disabled={!environmentId || inventoryLoading || currentBusyServerKey !== null}
+            onClick={() => void refreshInventory(scopeKey)}
           >
-            {inventoryLoading ? "Refreshing…" : "Refresh"}
+            {inventoryLoading ? (inventory === null ? "Loading…" : "Refreshing…") : "Refresh"}
           </Button>
         </div>
         {!environmentId ? (
           <p className="text-xs text-muted-foreground">
             Select a connected environment to inspect its profile.
           </p>
-        ) : inventoryError ? (
+        ) : inventoryError === "read" ? (
           <p role="alert" className="text-xs text-destructive">
             Could not read MCP configuration. Try refreshing.
           </p>
         ) : inventory === null ? (
           <p className="text-xs text-muted-foreground">Refresh to inspect configured servers.</p>
         ) : (
-          <div className="grid gap-2 @md/settings:grid-cols-2">
-            <InventoryProvider name="Codex" provider={inventory.codex} />
-            <InventoryProvider name="Claude Code" provider={inventory.claude} />
-          </div>
+          <>
+            {inventoryError === "write" ? (
+              <p role="alert" className="text-xs text-destructive">
+                {errorState?.message ?? "Could not update this MCP server. Try again."}
+              </p>
+            ) : null}
+            {mcpChanged ? (
+              <p className="text-xs text-muted-foreground">
+                Restart T3 Code, or the T3 server for remote environments, to apply changes to
+                active provider sessions.
+              </p>
+            ) : null}
+            <div className="grid gap-2 @md/settings:grid-cols-2">
+              <InventoryProvider
+                name="Codex"
+                providerId="codex"
+                provider={inventory.codex}
+                canManage={canManageProviders}
+                busyServerKey={currentBusyServerKey}
+                onEnabledChange={toggleMcpServer}
+              />
+              <InventoryProvider
+                name="Claude Code"
+                providerId="claude"
+                provider={inventory.claude}
+                canManage={canManageProviders}
+                busyServerKey={currentBusyServerKey}
+                onEnabledChange={toggleMcpServer}
+              />
+            </div>
+          </>
         )}
       </section>
     </section>
@@ -182,10 +299,18 @@ export function ProfileNativeProvidersSettings({
 
 function InventoryProvider({
   name,
+  providerId,
   provider,
+  canManage,
+  busyServerKey,
+  onEnabledChange,
 }: {
   readonly name: string;
+  readonly providerId: "codex" | "claude";
   readonly provider: ProfileMcpInventoryResult["codex"];
+  readonly canManage: boolean;
+  readonly busyServerKey: string | null;
+  readonly onEnabledChange: (provider: "codex" | "claude", name: string, enabled: boolean) => void;
 }) {
   const statusLabel = {
     missing: "Configuration file missing",
@@ -201,9 +326,28 @@ function InventoryProvider({
           {provider.servers.map((server) => (
             <li key={server.name} className="flex items-center justify-between gap-2">
               <span className="truncate">{server.name}</span>
-              <span className="shrink-0 text-muted-foreground">
-                {server.enabled ? "Enabled" : "Disabled"}
-              </span>
+              {canManage ? (
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-muted-foreground">
+                    {busyServerKey === `${providerId}:${server.name}`
+                      ? "Saving…"
+                      : server.enabled
+                        ? "Enabled"
+                        : "Disabled"}
+                  </span>
+                  <Switch
+                    size="sm"
+                    checked={server.enabled}
+                    disabled={busyServerKey !== null}
+                    aria-label={`${server.enabled ? "Disable" : "Enable"} ${server.name} in ${name}`}
+                    onCheckedChange={(enabled) => onEnabledChange(providerId, server.name, enabled)}
+                  />
+                </div>
+              ) : (
+                <span className="shrink-0 text-muted-foreground">
+                  {server.enabled ? "Enabled" : "Disabled"}
+                </span>
+              )}
             </li>
           ))}
         </ul>
@@ -218,11 +362,13 @@ function ProviderRow({
   name,
   description,
   enabled,
+  disabled,
   onEnabledChange,
 }: {
   readonly name: string;
   readonly description: string;
   readonly enabled: boolean;
+  readonly disabled?: boolean;
   readonly onEnabledChange: (enabled: boolean) => void;
 }) {
   return (
@@ -234,6 +380,7 @@ function ProviderRow({
       <Switch
         size="sm"
         checked={enabled}
+        disabled={disabled}
         aria-label={`${name} for profile`}
         onCheckedChange={onEnabledChange}
       />
