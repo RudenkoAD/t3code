@@ -1,7 +1,12 @@
 import {
   type EnvironmentId,
+  isProjectProfileToolDenied,
   isProviderWorkspaceSnapshotCurrent,
+  resolveProjectProfile,
   PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
+  type ProjectId,
+  type ProjectProfileToolProvider,
+  type ServerSettings,
   type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderSkill,
@@ -123,6 +128,41 @@ export function resolveProviderSkillsForCwd(
   cwd: string | null | undefined,
 ): ServerProvider["skills"] {
   return resolveProviderWorkspaceSnapshot(provider, cwd)?.skills ?? provider.skills;
+}
+
+/** Hide skills explicitly denied for this project and its assigned native profile. */
+export function filterDeniedProviderSkills(
+  skills: ReadonlyArray<ServerProviderSkill>,
+  settings: Pick<ServerSettings, "projectProfiles" | "projectSettingsOverrides">,
+  projectId: ProjectId | null,
+  provider: ProjectProfileToolProvider | null,
+): ServerProviderSkill[] {
+  if (provider === null || projectId === null) return [...skills];
+  const profile = resolveProjectProfile(settings, projectId);
+  return skills.filter(
+    (skill) =>
+      !isProjectProfileToolDenied(settings, projectId, profile, "skills", provider, skill.name),
+  );
+}
+
+/** A native skill can also arrive in Claude's slash-command list; don't expose a denied alias there. */
+export function filterDeniedSkillSlashCommands(
+  slashCommands: ReadonlyArray<ServerProviderSlashCommand>,
+  skills: ReadonlyArray<ServerProviderSkill>,
+  settings: Pick<ServerSettings, "projectProfiles" | "projectSettingsOverrides">,
+  projectId: ProjectId | null,
+  provider: ProjectProfileToolProvider | null,
+): ServerProviderSlashCommand[] {
+  if (provider === null || projectId === null) return [...slashCommands];
+  const profile = resolveProjectProfile(settings, projectId);
+  const deniedNames = new Set(
+    skills
+      .filter((skill) =>
+        isProjectProfileToolDenied(settings, projectId, profile, "skills", provider, skill.name),
+      )
+      .map((skill) => skill.name.trim().toLowerCase()),
+  );
+  return slashCommands.filter((command) => !deniedNames.has(command.name.trim().toLowerCase()));
 }
 
 export function resolveProviderSlashCommandsForCwd(

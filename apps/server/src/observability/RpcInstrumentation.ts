@@ -229,6 +229,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeDeviceState]: "device",
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.profileMcpInventory]: "provider",
+  [WS_METHODS.projectToolsInventory]: "project",
   [WS_METHODS.profileSetMcpServerEnabled]: "provider",
   [WS_METHODS.subscribeServerLifecycle]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",

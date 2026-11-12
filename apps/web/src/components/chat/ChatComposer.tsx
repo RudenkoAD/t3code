@@ -247,6 +247,8 @@ import {
   type ComposerDispatchMode,
 } from "@t3tools/client-runtime/state/composer-dispatch";
 import {
+  filterDeniedProviderSkills,
+  filterDeniedSkillSlashCommands,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
@@ -919,12 +921,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         (multipleModelSelections === null ? providerSendBlockReason : null)));
   const isSendDisabled = sendDisabledReason !== null;
   const selectedProviderStatus = selectedProviderEntry?.snapshot ?? null;
-  const selectedProviderSkills = selectedProviderStatus
+  const composerProjectId = activeProjectId ?? activeThread?.projectId ?? null;
+  const cwdProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
     : NO_PROVIDER_SKILLS;
-  const selectedProviderSlashCommands = selectedProviderStatus
+  const cwdProviderSlashCommands = selectedProviderStatus
     ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd)
     : NO_PROVIDER_SLASH_COMMANDS;
+  const projectToolProvider =
+    selectedProvider === "codex" ? "codex" : selectedProvider === "claudeAgent" ? "claude" : null;
+  const selectedProviderSkills = filterDeniedProviderSkills(
+    cwdProviderSkills,
+    settings,
+    composerProjectId,
+    projectToolProvider,
+  );
+  const selectedProviderSlashCommands = filterDeniedSkillSlashCommands(
+    cwdProviderSlashCommands,
+    cwdProviderSkills,
+    settings,
+    composerProjectId,
+    projectToolProvider,
+  );
   const { refresh: refreshWorkspaceSnapshotOnTyping, scanning: workspaceSkillsScanning } =
     useProviderWorkspaceSnapshotRefresh({
       environmentId,

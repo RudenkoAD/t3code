@@ -1,4 +1,4 @@
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { OrchestrationDispatchCommandError, resolveProjectProfile } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -25,6 +25,7 @@ import {
   readProfileMcpInventory,
   setProfileMcpServerEnabled,
 } from "./provider/ProfileMcpInventory.ts";
+import { readProjectToolsInventory } from "./project/ProjectToolsInventory.ts";
 import {
   AcpRegistryOperationError,
   CommandId,
@@ -102,7 +103,10 @@ import {
   EnvironmentAuthorizationError,
   type ProjectId,
   type ProviderDriverKind,
-  type ProviderInstanceId,
+  ProviderInstanceId,
+  ProjectToolsInventoryError,
+  type ProjectToolsInventoryInput,
+  profileProviderInstanceId,
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
@@ -2404,6 +2408,39 @@ export const layerWsRpc = (
           }),
         [WS_METHODS.profileMcpInventory]: (input) =>
           readProfileMcpInventory(input, profileHomeDirectory),
+        [WS_METHODS.projectToolsInventory]: Effect.fn("Project.toolsInventory")(function* (
+          input: ProjectToolsInventoryInput,
+        ) {
+          const [projectOption, settings] = yield* Effect.all(
+            [projectService.getById(input.projectId), serverSettings.getSettings],
+            { concurrency: "unbounded" },
+          ).pipe(
+            Effect.mapError(
+              () => new ProjectToolsInventoryError({ message: "Could not load project settings." }),
+            ),
+          );
+          if (Option.isNone(projectOption)) {
+            return yield* new ProjectToolsInventoryError({ message: "Project no longer exists." });
+          }
+          const profile = resolveProjectProfile(settings, input.projectId);
+          const providers = yield* providerRegistry.getProviders;
+          const codexProviderId = profileProviderInstanceId(
+            profile,
+            ProviderInstanceId.make("codex"),
+          );
+          const codexAuthStatus = providers.find(
+            (provider) => provider.instanceId === codexProviderId,
+          )?.auth.status;
+          return yield* readProjectToolsInventory({
+            projectId: input.projectId,
+            profile,
+            workspaceRoot: projectOption.value.workspaceRoot,
+            profileHomeDirectory,
+            settings,
+            providerInstanceRegistry: providerInstances,
+            codexAuthStatus,
+          });
+        }),
         [WS_METHODS.profileSetMcpServerEnabled]: (input) =>
           setProfileMcpServerEnabled(input, profileHomeDirectory),
         [WS_METHODS.serverSearchAcpRegistry]: (input) =>

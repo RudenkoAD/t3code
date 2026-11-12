@@ -2226,6 +2226,85 @@ it.effect(
     }),
 );
 
+it.effect(
+  "refreshes a project's native policy on session reuse without changing a sibling project",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const first = ProjectId.make("project-local-native-policy");
+      const second = ProjectId.make("project-inherited-native-policy");
+      const settingsLayer = ServerSettings.layerTest({
+        projectSettingsOverrides: {
+          [first]: {
+            profileToolAccess: {
+              personal: {
+                mcpServers: { codex: { build: true } },
+                skills: { codex: { review: true } },
+              },
+            },
+          },
+        },
+      }).pipe(Layer.orDie);
+      const serviceLayer = layerTest({
+        state,
+        idleTimeoutMs: 60_000,
+        serverSettingsLayer: settingsLayer,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const firstThread = ThreadId.make("project-tools-first-thread");
+        const sibling = ThreadId.make("project-tools-sibling-thread");
+        const providerSessionId = idAllocator.derive.providerSession({
+          providerInstanceId: personalModelSelection.instanceId,
+        });
+        const open = (threadId: ThreadId) =>
+          manager.open({
+            threadId,
+            providerSessionId,
+            modelSelection: personalModelSelection,
+            runtimePolicy,
+          });
+        yield* eventSink.write({
+          events: [
+            yield* makeThreadCreatedEvent({
+              idAllocator,
+              threadId: firstThread,
+              projectId: first,
+              now,
+            }),
+            yield* makeThreadCreatedEvent({
+              idAllocator,
+              threadId: sibling,
+              projectId: second,
+              now,
+            }),
+          ],
+        });
+        yield* open(firstThread);
+        yield* open(sibling);
+        const initial = yield* sessions.read(firstThread);
+        assert.deepEqual(initial?.nativeToolPolicy, {
+          deniedMcpServers: ["build"],
+          deniedSkills: ["review"],
+        });
+        assert.isUndefined((yield* sessions.read(sibling))?.nativeToolPolicy);
+        yield* settings.updateSettings({
+          projectProfileToolAccessOverrides: { [first]: null },
+        });
+        yield* open(firstThread);
+        const restored = yield* sessions.read(firstThread);
+        assert.isUndefined(restored?.nativeToolPolicy);
+        assert.equal(restored?.providerSessionId, initial?.providerSessionId);
+        yield* manager.close(providerSessionId);
+      }).pipe(Effect.provide(Layer.merge(serviceLayer, settingsLayer)));
+    }),
+);
+
 it.effect("ProviderSessionManagerV2 honors a project browser-access opt-out", () =>
   Effect.gen(function* () {
     const captured = yield* runBrowserAccessScenario({

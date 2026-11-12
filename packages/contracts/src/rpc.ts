@@ -44,6 +44,11 @@ import {
   ProfileMcpServerToggleError,
   ProfileSetMcpServerEnabledInput,
 } from "./profileMcpInventory.ts";
+import {
+  ProjectToolsInventoryError,
+  ProjectToolsInventoryInput,
+  ProjectToolsInventoryResult,
+} from "./projectToolsInventory.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ProviderAuthCancelInput,
@@ -515,6 +520,7 @@ export const WS_METHODS = {
   serverGetConfig: "server.getConfig",
   profileMcpInventory: "profile.mcpInventory",
   profileSetMcpServerEnabled: "profile.setMcpServerEnabled",
+  projectToolsInventory: "project.toolsInventory",
   serverGetNpmRelease: "server.getNpmRelease",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
@@ -670,6 +676,12 @@ const WsProfileSetMcpServerEnabledRpc = Rpc.make(WS_METHODS.profileSetMcpServerE
   payload: ProfileSetMcpServerEnabledInput,
   success: ProfileMcpInventoryResult,
   error: Schema.Union([ProfileMcpServerToggleError, EnvironmentAuthorizationError]),
+});
+
+const WsProjectToolsInventoryRpc = Rpc.make(WS_METHODS.projectToolsInventory, {
+  payload: ProjectToolsInventoryInput,
+  success: ProjectToolsInventoryResult,
+  error: Schema.Union([ProjectToolsInventoryError, EnvironmentAuthorizationError]),
 });
 
 export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
@@ -2099,6 +2111,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsProfileMcpInventoryRpc,
   WsProfileSetMcpServerEnabledRpc,
+  WsProjectToolsInventoryRpc,
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,

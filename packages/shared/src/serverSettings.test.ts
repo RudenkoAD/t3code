@@ -594,6 +594,140 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("treats a tools-only entry as sparse and preserves ordinary project overrides", () => {
+    const projectId = ProjectId.make("project-tools-sparse");
+    const instanceId = ProviderInstanceId.make("codex_work");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      projectSettingsOverrides: {
+        [projectId]: {
+          enableAgentBrowserAccess: true,
+          defaultAutoPull: true,
+          providerInstances: { [instanceId]: { enabled: false } },
+          profileToolAccess: {
+            work: { mcpServers: { codex: { build: true } } },
+          },
+        },
+      },
+    };
+
+    const updated = applyServerSettingsPatch(current, {
+      projectProfileToolAccessOverrides: {
+        [projectId]: { work: { skills: { codex: { review: true } } } },
+      },
+    });
+    expect(updated.projectSettingsOverrides[projectId]).toEqual({
+      enableAgentBrowserAccess: true,
+      defaultAutoPull: true,
+      providerInstances: { [instanceId]: { enabled: false } },
+      profileToolAccess: {
+        work: {
+          mcpServers: { codex: { build: true } },
+          skills: { codex: { review: true } },
+        },
+      },
+    });
+
+    // Ordinary entries keep their historical replace-by-omission behavior, but
+    // an older client that omits the new policy must not erase its saved denials.
+    const ordinaryUpdate = applyServerSettingsPatch(updated, {
+      projectSettingsOverrides: {
+        [projectId]: { enableAgentBrowserAccess: false },
+      },
+    });
+    expect(ordinaryUpdate.projectSettingsOverrides[projectId]).toEqual({
+      enableAgentBrowserAccess: false,
+      providerInstances: { [instanceId]: { enabled: false } },
+      profileToolAccess: updated.projectSettingsOverrides[projectId]?.profileToolAccess,
+    });
+    const staleSnapshot = applyServerSettingsPatch(ordinaryUpdate, {
+      projectSettingsOverrides: {
+        [projectId]: {
+          enableAgentBrowserAccess: true,
+          profileToolAccess: { work: { mcpServers: { codex: { build: true } } } },
+        },
+      },
+    });
+    expect(staleSnapshot.projectSettingsOverrides[projectId]?.profileToolAccess).toEqual(
+      ordinaryUpdate.projectSettingsOverrides[projectId]?.profileToolAccess,
+    );
+    const reset = applyServerSettingsPatch(staleSnapshot, {
+      projectSettingsOverrides: { [projectId]: null },
+    });
+    expect(reset.projectSettingsOverrides[projectId]).toEqual({
+      profileToolAccess: ordinaryUpdate.projectSettingsOverrides[projectId]?.profileToolAccess,
+    });
+  });
+
+  it("merges denial names safely when names match object prototype keys", () => {
+    const projectId = ProjectId.make("project-tools-prototype-keys");
+    const patch = decodeServerSettingsPatch(
+      JSON.parse(
+        '{"projectProfileToolAccessOverrides":{"project-tools-prototype-keys":{"personal":{"mcpServers":{"codex":{"__proto__":true,"constructor":true}}}}}}',
+      ),
+    );
+    const updated = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, patch);
+    const denied =
+      updated.projectSettingsOverrides[projectId]?.profileToolAccess?.personal?.mcpServers?.codex;
+    expect(denied).toEqual(
+      Object.fromEntries([
+        ["__proto__", true],
+        ["constructor", true],
+      ]),
+    );
+    expect(Object.getPrototypeOf(denied)).toBe(Object.prototype);
+  });
+
+  it("merges and removes individual profile tool denials without clobbering siblings", () => {
+    const projectId = ProjectId.make("project-tools");
+    const first = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      projectProfileToolAccessOverrides: {
+        [projectId]: {
+          work: {
+            mcpServers: { codex: { "same-name": true } },
+            skills: { claude: { "review-skill": true } },
+          },
+        },
+      },
+    });
+    const second = applyServerSettingsPatch(first, {
+      projectProfileToolAccessOverrides: {
+        [projectId]: {
+          work: { mcpServers: { codex: { "other-server": true } } },
+          personal: { mcpServers: { codex: { "same-name": true } } },
+        },
+      },
+    });
+    expect(second.projectSettingsOverrides[projectId]?.profileToolAccess).toEqual({
+      work: {
+        mcpServers: { codex: { "same-name": true, "other-server": true } },
+        skills: { claude: { "review-skill": true } },
+      },
+      personal: { mcpServers: { codex: { "same-name": true } } },
+    });
+
+    const removed = applyServerSettingsPatch(second, {
+      projectProfileToolAccessOverrides: {
+        [projectId]: {
+          work: { mcpServers: { codex: { "same-name": null, "other-server": null } } },
+        },
+      },
+    });
+    expect(removed.projectSettingsOverrides[projectId]?.profileToolAccess).toEqual({
+      work: { skills: { claude: { "review-skill": true } } },
+      personal: { mcpServers: { codex: { "same-name": true } } },
+    });
+    const inherited = applyServerSettingsPatch(removed, {
+      projectProfileToolAccessOverrides: {
+        [projectId]: {
+          work: { skills: { claude: { "review-skill": null } } },
+          personal: { mcpServers: { codex: { "same-name": null } } },
+        },
+      },
+    });
+    expect(inherited.projectSettingsOverrides[projectId]?.profileToolAccess).toBeUndefined();
+  });
+
   // regression: #18334 a newer client must still see this server drop a key it does not know
   it("drops an override key this server does not know from a patch and keeps one it stored", () => {
     const projectId = ProjectId.make("project-a");

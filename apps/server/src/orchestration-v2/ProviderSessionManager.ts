@@ -1,5 +1,12 @@
 import { AgentScope } from "@t3tools/shared/AgentScope";
-import { routeProfileProviderSelection } from "./profileProviderRouting.ts";
+import {
+  projectNativeToolPolicy,
+  routeProfileProviderSelection,
+} from "./profileProviderRouting.ts";
+import {
+  NativeProjectToolPolicy,
+  type McpProviderSessionConfig,
+} from "@t3tools/provider-core/server/mcpSession";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectToolAccess } from "@t3tools/shared/projectSettings";
 import {
@@ -58,6 +65,7 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const sameNativeToolPolicy = Schema.toEquivalence(Schema.UndefinedOr(NativeProjectToolPolicy));
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
 const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
 /** Past adapters' own 10 s stop fallbacks, so they settle first when the provider answers at all. */
@@ -376,11 +384,17 @@ export const layerWithOptions = (
             Effect.orElseSucceed(() => false),
           );
       const agentAccessSettings = Effect.fn("ProviderSessionManagerV2.agentAccessSettings")(
-        function* (threadId: ThreadId) {
-          if (Option.isNone(serverSettings)) return { browser: true, device: false };
+        function* (threadId: ThreadId, instanceId: ProviderInstanceId) {
+          if (Option.isNone(serverSettings))
+            return { browser: true, device: false, nativeToolPolicy: undefined };
           return yield* Effect.gen(function* () {
             const settings = yield* serverSettings.value.getSettings;
             const thread = yield* projectionStore.getThread(threadId);
+            const nativeToolPolicy = projectNativeToolPolicy(
+              settings,
+              thread.projectId,
+              instanceId,
+            );
             const effective = resolveProjectToolAccess(settings, thread.projectId);
             const projectOverrides = settings.projectSettingsOverrides[thread.projectId];
             const browserOverridden = projectOverrides?.enableAgentBrowserAccess !== undefined;
@@ -391,12 +405,14 @@ export const layerWithOptions = (
                 : Option.none();
               if (Option.isNone(project)) {
                 return {
+                  nativeToolPolicy,
                   browser: browserOverridden ? false : effective.enableAgentBrowserAccess,
                   device: deviceOverridden ? false : effective.enableAgentDeviceAccess,
                 };
               }
             }
             return {
+              nativeToolPolicy,
               browser: effective.enableAgentBrowserAccess,
               device: effective.enableAgentDeviceAccess,
             };
@@ -405,7 +421,7 @@ export const layerWithOptions = (
               Effect.logWarning(
                 "Could not resolve agent access; withholding browser and device tools.",
                 { threadId, cause },
-              ).pipe(Effect.as({ browser: false, device: false })),
+              ).pipe(Effect.as({ browser: false, device: false, nativeToolPolicy: undefined })),
             ),
           );
         },
@@ -474,6 +490,7 @@ export const layerWithOptions = (
       const prepareMcpSession = (
         threadId: ThreadId,
         providerInstanceId: ProviderInstanceId,
+        validated?: Pick<McpProviderSessionConfig, "nativeToolPolicy">,
       ): Effect.Effect<PreparedMcpCredential> =>
         options.configureMcp === false
           ? mcpSessions
@@ -483,8 +500,12 @@ export const layerWithOptions = (
               threadId,
               Effect.gen(function* () {
                 // Live providers build MCP clients once; reuse credentials across workspace handoffs.
-                const { browser: browserToolsAvailable, device: deviceToolsAvailable } =
-                  yield* agentAccessSettings(threadId);
+                const {
+                  browser: browserToolsAvailable,
+                  device: deviceToolsAvailable,
+                  nativeToolPolicy: currentPolicy,
+                } = yield* agentAccessSettings(threadId, providerInstanceId);
+                const nativeToolPolicy = validated ? validated.nativeToolPolicy : currentPolicy;
                 const capabilities = new Set<
                   import("../mcp/McpInvocationContext.ts").McpCapability
                 >(["orchestration", "worktree", "pull-requests"]);
@@ -518,6 +539,9 @@ export const layerWithOptions = (
                     // A credential issued while the lineage read failed is replaced once it works.
                     (resolved.thread.subagent === true) === subagent
                   ) {
+                    if (!sameNativeToolPolicy(existing.nativeToolPolicy, nativeToolPolicy)) {
+                      yield* mcpSessions.set({ ...existing, nativeToolPolicy });
+                    }
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
@@ -530,7 +554,9 @@ export const layerWithOptions = (
                   capabilities,
                   subagent,
                 });
-                yield* mcpSessions.set(credential.config);
+                yield* mcpSessions.set(
+                  nativeToolPolicy ? { ...credential.config, nativeToolPolicy } : credential.config,
+                );
                 reserveMcpCredential(threadId, credential.config.providerSessionId);
                 return { mcpCredentialId: credential.config.providerSessionId, issued: true };
               }),
@@ -2404,6 +2430,7 @@ export const layerWithOptions = (
           sessionOpen.withLock(
             input.providerSessionId,
             Effect.gen(function* () {
+              let nativeToolPolicy: McpProviderSessionConfig["nativeToolPolicy"];
               if (Option.isSome(serverSettings)) {
                 const [settings, thread] = yield* Effect.all([
                   serverSettings.value.getSettings,
@@ -2422,6 +2449,11 @@ export const layerWithOptions = (
                   settings,
                   thread.projectId,
                   input.modelSelection,
+                );
+                nativeToolPolicy = projectNativeToolPolicy(
+                  settings,
+                  thread.projectId,
+                  input.modelSelection.instanceId,
                 );
                 if (routed === undefined || routed.instanceId !== input.modelSelection.instanceId) {
                   return yield* new ProviderSessionOpenError({
@@ -2464,6 +2496,46 @@ export const layerWithOptions = (
                   threadId: input.threadId,
                   providerInstanceId: existing.runtime.instanceId,
                 });
+                // A reused native thread needs to resume with the next turn's policy.
+                yield* mcpPrepareLock.withLock(
+                  input.threadId,
+                  Effect.gen(function* () {
+                    const current = yield* mcpSessions.read(input.threadId);
+                    if (
+                      !current ||
+                      current.providerInstanceId !== existing.runtime.instanceId ||
+                      sameNativeToolPolicy(current.nativeToolPolicy, nativeToolPolicy)
+                    )
+                      return;
+                    const liveEntry = (yield* Ref.get(sessions)).get(key);
+                    if (!liveEntry) return;
+                    if (liveEntry.busyTurns.size > 0) {
+                      const records = yield* Effect.option(
+                        projectionStore.getThreadRecords(input.threadId, ["providerThreads"]),
+                      );
+                      if (
+                        Option.isNone(records) ||
+                        records.value.providerThreads.some(
+                          (thread) =>
+                            thread.providerSessionId === input.providerSessionId &&
+                            hasBusyTurn(liveEntry, thread.id),
+                        )
+                      )
+                        return;
+                    }
+                    yield* mcpSessions.set({ ...current, nativeToolPolicy });
+                    yield* Ref.update(sessions, (entries) => {
+                      const entry = entries.get(key);
+                      if (!entry) return entries;
+                      const loaded = new Map(entry.loadedProviderThreadKeyByThread);
+                      loaded.delete(input.threadId);
+                      return new Map(entries).set(key, {
+                        ...entry,
+                        loadedProviderThreadKeyByThread: loaded,
+                      });
+                    });
+                  }),
+                );
                 yield* touchActivity(input.providerSessionId);
                 return existing.exposedRuntime;
               }
@@ -2482,6 +2554,7 @@ export const layerWithOptions = (
               const prepared = yield* prepareMcpSession(
                 input.threadId,
                 input.modelSelection.instanceId,
+                { nativeToolPolicy },
               );
               const mcpCredentialId = prepared.mcpCredentialId;
               let reservationDropped = mcpCredentialId === undefined;

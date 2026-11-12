@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import { type CommandId, ProjectId } from "./baseSchemas.ts";
+import { AuthProvidersManageScope, AuthSettingsWriteScope } from "./auth.ts";
 import {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
@@ -17,6 +18,8 @@ import {
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   profileProviderInstanceId,
   requiredScopesForProjectMutation,
+  requiredScopesForServerSettingsPatch,
+  isProjectProfileToolDenied,
   resolveProjectProfile,
   resolveProjectProviderInstanceId,
   resolveIdleCompaction,
@@ -115,6 +118,113 @@ describe("storage cleanup settings", () => {
     expect(() =>
       decodeServerSettingsPatch({ storageCleanup: { worktreeKeepWhen: "unknown" } }),
     ).toThrow();
+  });
+});
+
+describe("per-project profile tool denials", () => {
+  it("validates sparse profile/provider/kind denials and per-name removal patches", () => {
+    const projectId = ProjectId.make("project-tools");
+    const deny = decodeServerSettingsPatch({
+      projectSettingsOverrides: {
+        [projectId]: {
+          profileToolAccess: {
+            work: { mcpServers: { codex: { "docs-search": true } } },
+          },
+        },
+      },
+    });
+    expect(deny.projectSettingsOverrides?.[projectId]?.profileToolAccess).toEqual({
+      work: { mcpServers: { codex: { "docs-search": true } } },
+    });
+    const remove = decodeServerSettingsPatch({
+      projectSettingsOverrides: {
+        [projectId]: {
+          profileToolAccess: {
+            work: { mcpServers: { codex: { "docs-search": null } } },
+          },
+        },
+      },
+    });
+    expect(remove.projectSettingsOverrides?.[projectId]?.profileToolAccess).toEqual({
+      work: { mcpServers: { codex: { "docs-search": null } } },
+    });
+    expect(() =>
+      decodeServerSettings({
+        projectSettingsOverrides: {
+          [projectId]: {
+            profileToolAccess: {
+              work: { mcpServers: { codex: { "docs-search": null } } },
+            },
+          },
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({
+        projectSettingsOverrides: {
+          [projectId]: {
+            profileToolAccess: {
+              work: { mcpServers: { codex: { "docs-search": false } } },
+            },
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("requires provider-management and settings-write grants for sparse tool policy updates", () => {
+    const projectId = ProjectId.make("project-tools");
+    expect(
+      requiredScopesForServerSettingsPatch({
+        projectProfileToolAccessOverrides: {
+          [projectId]: {
+            personal: { skills: { claude: { "review-skill": true } } },
+          },
+        },
+      }),
+    ).toEqual([AuthSettingsWriteScope, AuthProvidersManageScope]);
+    expect(
+      requiredScopesForServerSettingsPatch({
+        projectProfileToolAccessOverrides: { [projectId]: null },
+      }),
+    ).toEqual([AuthSettingsWriteScope, AuthProvidersManageScope]);
+    expect(
+      requiredScopesForServerSettingsPatch({
+        projectSettingsOverrides: { [projectId]: null },
+      }),
+    ).toEqual([AuthSettingsWriteScope]);
+  });
+
+  it("reports denials only for the selected project profile and provider", () => {
+    const projectId = ProjectId.make("project-tools");
+    const settings = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: {
+          profileToolAccess: {
+            work: { mcpServers: { codex: { "docs-search": true } } },
+          },
+        },
+      },
+    });
+    expect(
+      isProjectProfileToolDenied(settings, projectId, "work", "mcpServers", "codex", "docs-search"),
+    ).toBe(true);
+    expect(
+      isProjectProfileToolDenied(
+        settings,
+        projectId,
+        "personal",
+        "mcpServers",
+        "codex",
+        "docs-search",
+      ),
+    ).toBe(false);
+    expect(
+      isProjectProfileToolDenied(settings, projectId, "work", "skills", "codex", "docs-search"),
+    ).toBe(false);
+    expect(
+      isProjectProfileToolDenied(settings, null, "work", "mcpServers", "codex", "docs-search"),
+    ).toBe(false);
   });
 });
 

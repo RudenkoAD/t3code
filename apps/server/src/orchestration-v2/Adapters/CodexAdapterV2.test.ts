@@ -3029,6 +3029,95 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect("refreshes only the native Codex thread when project MCP policy changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-project-mcp-policy-refresh";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const entries = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "unused-turn",
+          prompt: "unused-prompt",
+        }).slice(0, 5);
+        const unsubscribeAndResume = (id: number, config: Record<string, unknown>) => [
+          {
+            type: "expect_outbound" as const,
+            label: `unsubscribe-${id}`,
+            frame: { id, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+          },
+          {
+            type: "emit_inbound" as const,
+            label: `unsubscribe-${id}`,
+            frame: { id, result: { status: "unsubscribed" } },
+          },
+          {
+            type: "expect_outbound" as const,
+            label: `resume-${id}`,
+            frame: {
+              id: id + 1,
+              method: "thread/resume",
+              params: { threadId: nativeThreadId, excludeTurns: true, config },
+            },
+          },
+          {
+            type: "emit_inbound" as const,
+            label: `resume-${id}`,
+            frame: {
+              id: id + 1,
+              result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } },
+            },
+          },
+        ];
+        const blockedConfig = {
+          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+          mcp_servers: { blocked: { enabled: false } },
+        };
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...entries,
+            ...unsubscribeAndResume(3, blockedConfig),
+            ...unsubscribeAndResume(5, CodexAdapterV2.CODEX_THREAD_CONFIG),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        const session = {
+          environmentId: EnvironmentId.make(`environment-${scenario}`),
+          threadId: harness.threadId,
+          providerSessionId: `provider-session-${scenario}`,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer test-token",
+          browserToolsAvailable: true,
+          nativeToolPolicy: { deniedMcpServers: ["blocked"], deniedSkills: [] },
+        };
+        yield* sessions.set(session);
+        yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+        yield* sessions.set({
+          ...session,
+          nativeToolPolicy: { deniedMcpServers: [], deniedSkills: [] },
+        });
+        yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
   // regression: #15389 archived native Codex sessions resume via thread/unarchive
   it.effect.each(
     (
@@ -3578,7 +3667,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             Effect.provide(
               ProviderReplayHarness.layerWithRegistry(
                 { name: "codex-capacity-retry", runtimePolicyOverride: { cwd } },
-                CodexAdapterV2Testkit.layer({ transcript: localTranscript, driver }),
+                CodexAdapterV2Testkit.layer({
+                  transcript: localTranscript,
+                  driver,
+                  additionalInstanceIds: [ProviderInstanceId.make("t3profile_personal_codex")],
+                }),
                 { runEffectWorker: false },
               ),
             ),
@@ -5009,6 +5102,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               CodexAdapterV2Testkit.layer({
                 transcript: localTranscript,
                 driver: replayDriver,
+                additionalInstanceIds: [ProviderInstanceId.make("t3profile_personal_codex")],
               }),
               { runEffectWorker: false },
             ),
@@ -5125,7 +5219,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           Effect.provide(
             ProviderReplayHarness.layerWithRegistry(
               { name: "codex-background-stop-untracked", runtimePolicyOverride: { cwd } },
-              CodexAdapterV2Testkit.layer({ transcript: localTranscript }),
+              CodexAdapterV2Testkit.layer({
+                transcript: localTranscript,
+                additionalInstanceIds: [ProviderInstanceId.make("t3profile_personal_codex")],
+              }),
               { runEffectWorker: false },
             ),
           ),

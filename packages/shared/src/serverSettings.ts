@@ -258,7 +258,10 @@ const byHost = (tokens: unknown) =>
 
 const knownProjectOverrideKeys = new Set(Object.keys(ProjectSettingsOverrides.fields));
 
-function pickOverrideKeys(entry: ProjectSettingsOverrides | undefined, known: boolean) {
+function pickOverrideKeys(
+  entry: Readonly<Record<string, unknown>> | undefined,
+  known: boolean,
+): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries<unknown>(entry ?? {}).filter(
       ([key]) => knownProjectOverrideKeys.has(key) === known,
@@ -266,26 +269,113 @@ function pickOverrideKeys(entry: ProjectSettingsOverrides | undefined, known: bo
   );
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Predicate.isObject(value) && !Array.isArray(value);
+}
+
+/** Merge explicit tool denials by item so parallel UI writes do not overwrite one another. */
+function mergeProjectProfileToolAccess(current: unknown, patch: unknown): unknown {
+  if (patch === null) return undefined;
+  if (!isPlainRecord(patch)) return current;
+  const next = { ...(isPlainRecord(current) ? current : {}) };
+  for (const [profile, profilePatch] of Object.entries(patch)) {
+    if (profilePatch === null) {
+      delete next[profile];
+      continue;
+    }
+    if (!isPlainRecord(profilePatch)) continue;
+    const profileNext = { ...(isPlainRecord(next[profile]) ? next[profile] : {}) };
+    for (const [kind, kindPatch] of Object.entries(profilePatch)) {
+      if (kindPatch === null) {
+        delete profileNext[kind];
+        continue;
+      }
+      if (!isPlainRecord(kindPatch)) continue;
+      const kindNext = { ...(isPlainRecord(profileNext[kind]) ? profileNext[kind] : {}) };
+      for (const [provider, providerPatch] of Object.entries(kindPatch)) {
+        if (providerPatch === null) {
+          delete kindNext[provider];
+          continue;
+        }
+        if (!isPlainRecord(providerPatch)) continue;
+        const deniedNames = new Map(
+          Object.entries(isPlainRecord(kindNext[provider]) ? kindNext[provider] : {}),
+        );
+        for (const [name, denied] of Object.entries(providerPatch)) {
+          if (denied === null) deniedNames.delete(name);
+          else if (denied === true) deniedNames.set(name, true);
+        }
+        if (deniedNames.size === 0) delete kindNext[provider];
+        else kindNext[provider] = Object.fromEntries(deniedNames);
+      }
+      if (Object.keys(kindNext).length === 0) delete profileNext[kind];
+      else profileNext[kind] = kindNext;
+    }
+    if (Object.keys(profileNext).length === 0) delete next[profile];
+    else next[profile] = profileNext;
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
 // Older clients omit providerInstances during whole-entry replacement; preserve it to avoid wiping overrides.
 function mergeProjectSettingsOverridesPatch(
   current: Readonly<Record<string, ProjectSettingsOverrides>>,
-  patch: Readonly<Record<string, ProjectSettingsOverrides | null>>,
+  patch: NonNullable<ServerSettingsPatch["projectSettingsOverrides"]>,
 ): Record<string, ProjectSettingsOverrides> {
   const next = new Map(Object.entries(current));
   for (const [projectId, entry] of Object.entries(patch)) {
     if (entry === null) {
-      next.delete(projectId);
+      const stored = next.get(projectId);
+      // Resetting ordinary project settings must not clear provider access policy.
+      if (stored?.profileToolAccess !== undefined) {
+        next.set(projectId, { profileToolAccess: stored.profileToolAccess });
+      } else {
+        next.delete(projectId);
+      }
       continue;
     }
-    const storedProviderInstances = current[projectId]?.providerInstances;
-    next.set(projectId, {
+    const stored = next.get(projectId);
+    const storedProviderInstances = stored?.providerInstances;
+    const updated: Record<string, unknown> = {
       // Preserve downgraded storage, but reject new unknown writes so clients can detect unsupported settings.
-      ...pickOverrideKeys(current[projectId], false),
+      ...pickOverrideKeys(stored, false),
       ...pickOverrideKeys(entry, true),
       ...(Object.hasOwn(entry, "providerInstances") || storedProviderInstances === undefined
         ? {}
         : { providerInstances: storedProviderInstances }),
-    });
+    };
+    // This field is intentionally ignored in ordinary snapshots. Only the dedicated sparse patch
+    // below is allowed to change it, preventing stale snapshots from resurrecting removed denials.
+    delete updated.profileToolAccess;
+    if (stored?.profileToolAccess !== undefined)
+      updated.profileToolAccess = stored.profileToolAccess;
+    next.set(projectId, updated as ProjectSettingsOverrides);
+  }
+  return Object.fromEntries(next);
+}
+
+function mergeProjectProfileToolAccessOverrides(
+  current: Readonly<Record<string, ProjectSettingsOverrides>>,
+  patch: NonNullable<ServerSettingsPatch["projectProfileToolAccessOverrides"]> | undefined,
+): Record<string, ProjectSettingsOverrides> {
+  if (patch === undefined) return { ...current };
+  const next = new Map(Object.entries(current));
+  for (const [projectId, accessPatch] of Object.entries(patch)) {
+    const stored = next.get(projectId);
+    if (accessPatch === null) {
+      if (stored === undefined) continue;
+      const { profileToolAccess: _removed, ...ordinary } = stored;
+      if (Object.keys(ordinary).length === 0) next.delete(projectId);
+      else next.set(projectId, ordinary);
+      continue;
+    }
+    const merged = mergeProjectProfileToolAccess(stored?.profileToolAccess, accessPatch);
+    if (merged === stored?.profileToolAccess) continue;
+    if (merged === undefined && stored === undefined) continue;
+    const updated: Record<string, unknown> = { ...stored };
+    if (merged === undefined) delete updated.profileToolAccess;
+    else updated.profileToolAccess = merged;
+    next.set(projectId, updated as ProjectSettingsOverrides);
   }
   return Object.fromEntries(next);
 }
@@ -332,7 +422,11 @@ function translateLegacyProjectOverridePatch(
   }
   const currentEntries: Readonly<Record<string, ProjectSettingsOverrides>> =
     current.projectSettingsOverrides;
-  const entries = new Map<string, ProjectSettingsOverrides | null>(
+  type ProjectSettingsOverridePatchEntry = Exclude<
+    NonNullable<ServerSettingsPatch["projectSettingsOverrides"]>[ProjectId],
+    null
+  >;
+  const entries = new Map<string, ProjectSettingsOverridePatchEntry | null>(
     Object.entries(rest.projectSettingsOverrides ?? {}),
   );
   // Canonical entries outrank legacy maps, including deliberately omitted keys.
@@ -344,7 +438,7 @@ function translateLegacyProjectOverridePatch(
     if (map === undefined) return;
     for (const [projectId, value] of Object.entries(map)) {
       if (canonicalProjectIds.has(projectId)) continue;
-      const entry: ProjectSettingsOverrides = {
+      const entry: ProjectSettingsOverridePatchEntry = {
         ...(entries.get(projectId) ?? currentEntries[projectId]),
       };
       if (value === null || value === undefined) {
@@ -409,6 +503,7 @@ export function applyServerSettingsPatch(
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectProfiles: projectProfilesPatch,
     projectSettingsOverrides: projectSettingsOverridesPatch,
+    projectProfileToolAccessOverrides: projectProfileToolAccessOverridesPatch,
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
     projectAutoPullOverrides: _legacyAutoPull,
     projectScriptOverrides: _legacyScripts,
@@ -502,6 +597,21 @@ export function applyServerSettingsPatch(
     };
   }
   const next = deepMerge(current, patchForMerge);
+  const projectSettingsOverrides =
+    projectSettingsOverridesPatch === undefined &&
+    projectProfileToolAccessOverridesPatch === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(
+            mergeProjectProfileToolAccessOverrides(
+              mergeProjectSettingsOverridesPatch(
+                current.projectSettingsOverrides,
+                projectSettingsOverridesPatch ?? {},
+              ),
+              projectProfileToolAccessOverridesPatch,
+            ),
+          ).filter(([, entry]) => Object.keys(entry).length > 0),
+        );
   const nextWithReplacementsBase = {
     ...next,
     favorites,
@@ -618,18 +728,7 @@ export function applyServerSettingsPatch(
     ...(projectProfilesPatch !== undefined
       ? { projectProfiles: mergeSettingsEntries(current.projectProfiles, projectProfilesPatch) }
       : {}),
-    ...(projectSettingsOverridesPatch !== undefined
-      ? {
-          projectSettingsOverrides: Object.fromEntries(
-            Object.entries(
-              mergeProjectSettingsOverridesPatch(
-                current.projectSettingsOverrides,
-                projectSettingsOverridesPatch,
-              ),
-            ).filter(([, entry]) => Object.keys(entry).length > 0),
-          ),
-        }
-      : {}),
+    ...(projectSettingsOverrides === undefined ? {} : { projectSettingsOverrides }),
     ...(patch.defaultModelSelection !== undefined
       ? { defaultModelSelection: patch.defaultModelSelection }
       : {}),

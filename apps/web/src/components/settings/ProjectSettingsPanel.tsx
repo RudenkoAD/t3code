@@ -50,6 +50,7 @@ import {
 } from "./ProjectFaviconPickerDialog";
 import { ProjectActionsSettings } from "./ProjectActionsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
+import { ProjectToolAccessSettings } from "./ProjectToolAccessSettings";
 import {
   defaultProjectIcon,
   hasDefaultProjectIcon,
@@ -654,6 +655,7 @@ function ProjectDetail({
           ) : null}
         </SettingsSection>
         <ProjectDefaultsSettings category="project" />
+        <ProjectToolAccessSettings projects={group.memberProjects} />
         <ProjectActionsSettings />
         {checkoutChoices}
         <SettingsSection title="Danger">

@@ -15,6 +15,7 @@ import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import {
   ProviderReplayEntry,
   type ModelSelection,
+  ProviderInstanceId,
   type ProviderApprovalDecision,
   type ProviderReplayTranscript,
 } from "@t3tools/contracts";
@@ -1035,16 +1036,24 @@ function layerClaudeProviderAdapterRegistryReplay(
       Effect.orDie,
       Effect.map((tmpRoot) =>
         ProviderAdapterRegistry.layerFromAdaptersEffect(
-          ClaudeAdapterV2.createClaudeAdapterV2(
-            {
-              instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
-              displayName: undefined,
-              environment: [{ name: "CLAUDE_CODE_TMPDIR", value: tmpRoot, sensitive: false }],
-              enabled: true,
-              config: DEFAULT_CLAUDE_SETTINGS,
-            },
-            {},
-          ).pipe(Effect.map((adapter) => [adapter])),
+          Effect.forEach(
+            [
+              ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+              ProviderInstanceId.make("t3profile_personal_claudeAgent"),
+              ProviderInstanceId.make("t3profile_work_claudeAgent"),
+            ],
+            (instanceId) =>
+              ClaudeAdapterV2.createClaudeAdapterV2(
+                {
+                  instanceId,
+                  displayName: undefined,
+                  environment: [{ name: "CLAUDE_CODE_TMPDIR", value: tmpRoot, sensitive: false }],
+                  enabled: true,
+                  config: DEFAULT_CLAUDE_SETTINGS,
+                },
+                {},
+              ),
+          ),
         ),
       ),
       Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),

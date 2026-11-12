@@ -1185,6 +1185,42 @@ export const ProjectProviderInstanceOverride = Schema.Struct({
 });
 export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOverride.Type;
 
+export const ProjectProfileToolKind = Schema.Literals(["mcpServers", "skills"]);
+export type ProjectProfileToolKind = typeof ProjectProfileToolKind.Type;
+export const ProjectProfileToolProvider = Schema.Literals(["codex", "claude"]);
+export type ProjectProfileToolProvider = typeof ProjectProfileToolProvider.Type;
+const ProjectProfileToolDenials = Schema.Record(TrimmedNonEmptyString, Schema.Literal(true));
+const ProjectProfileToolDenialsPatch = Schema.Record(
+  TrimmedNonEmptyString,
+  Schema.NullOr(Schema.Literal(true)),
+);
+const ProjectProfileToolProviderDenials = Schema.Struct({
+  codex: Schema.optionalKey(ProjectProfileToolDenials),
+  claude: Schema.optionalKey(ProjectProfileToolDenials),
+});
+const ProjectProfileToolProviderDenialsPatch = Schema.Struct({
+  codex: Schema.optionalKey(Schema.NullOr(ProjectProfileToolDenialsPatch)),
+  claude: Schema.optionalKey(Schema.NullOr(ProjectProfileToolDenialsPatch)),
+});
+const ProjectProfileToolAccess = Schema.Struct({
+  mcpServers: Schema.optionalKey(ProjectProfileToolProviderDenials),
+  skills: Schema.optionalKey(ProjectProfileToolProviderDenials),
+});
+const ProjectProfileToolAccessPatch = Schema.Struct({
+  mcpServers: Schema.optionalKey(Schema.NullOr(ProjectProfileToolProviderDenialsPatch)),
+  skills: Schema.optionalKey(Schema.NullOr(ProjectProfileToolProviderDenialsPatch)),
+});
+const ProjectProfileToolAccessByProfile = Schema.Struct({
+  work: Schema.optionalKey(ProjectProfileToolAccess),
+  personal: Schema.optionalKey(ProjectProfileToolAccess),
+});
+const ProjectProfileToolAccessByProfilePatch = Schema.Struct({
+  work: Schema.optionalKey(Schema.NullOr(ProjectProfileToolAccessPatch)),
+  personal: Schema.optionalKey(Schema.NullOr(ProjectProfileToolAccessPatch)),
+});
+export type ProjectProfileToolAccess = typeof ProjectProfileToolAccess.Type;
+export type ProjectProfileToolAccessPatch = typeof ProjectProfileToolAccessPatch.Type;
+
 /** Absent keys inherit; null is a value for nullable settings.
  * providerInstances overrides fields per instance; other keys replace the whole setting. */
 export const ProjectSettingsOverrides = Schema.Struct({
@@ -1215,10 +1251,15 @@ export const ProjectSettingsOverrides = Schema.Struct({
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   speechProjectCustomWords: Schema.optionalKey(SpeechCustomWords),
+  /** Explicit per-project denials, scoped to the project's Work/Personal native profile. */
+  profileToolAccess: Schema.optionalKey(ProjectProfileToolAccessByProfile),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
-} satisfies Record<ProjectScopedServerSettingKey | "providerInstances", unknown>);
+} satisfies Record<
+  ProjectScopedServerSettingKey | "providerInstances" | "profileToolAccess",
+  unknown
+>);
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 // Whole-entry writers must round-trip unknown keys; keep the type closed to catch misspellings.
@@ -1596,6 +1637,22 @@ export const ServerSettings = Schema.Struct({
   usageModelFilter: ForwardCompatibleOptional(UsageModelFilter),
 });
 export type ServerSettings = typeof ServerSettings.Type;
+
+export function isProjectProfileToolDenied(
+  settings: Pick<ServerSettings, "projectSettingsOverrides">,
+  projectId: ProjectId | null,
+  profile: ProjectProfile,
+  kind: ProjectProfileToolKind,
+  provider: ProjectProfileToolProvider,
+  name: string,
+): boolean {
+  if (projectId === null) return false;
+  return (
+    settings.projectSettingsOverrides[projectId]?.profileToolAccess?.[profile]?.[kind]?.[
+      provider
+    ]?.[name] === true
+  );
+}
 
 export const DEFAULT_SERVER_SETTINGS: ServerSettings = Schema.decodeSync(ServerSettings)({});
 
@@ -2013,7 +2070,11 @@ export const ServerSettingsPatch = Schema.Struct({
       ),
     }),
   ),
-  /** Replaces each project's override set; null removes it. Omitted providerInstances retains its stored value. */
+  /** Sparse project tool-policy updates; never included in settings snapshots. */
+  projectProfileToolAccessOverrides: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.NullOr(ProjectProfileToolAccessByProfilePatch)),
+  ),
+  /** Replaces ordinary project overrides; null clears them but retains project tool denials. */
   projectSettingsOverrides: Schema.optionalKey(
     Schema.Record(
       ProjectId,
@@ -2021,6 +2082,9 @@ export const ServerSettingsPatch = Schema.Struct({
         keepUnknownOverrideKeys(
           Schema.Struct({
             ...ProjectSettingsOverrides.fields,
+            profileToolAccess: Schema.optionalKey(
+              Schema.NullOr(ProjectProfileToolAccessByProfilePatch),
+            ),
             sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSettings),
           }),
         ),
@@ -2146,6 +2210,9 @@ export function requiredScopesForServerSettingsPatch(
   if (Object.values(patch.secretProviders ?? {}).some((entry) => entry === null)) {
     changesSettings = true;
   }
+  // Project tool access controls provider configuration exposure and uses its own sparse patch
+  // channel so settings snapshots cannot echo or erase policy accidentally.
+  if (patch.projectProfileToolAccessOverrides !== undefined) changesProviders = true;
   return [
     ...(changesSettings || !changesProviders ? [AuthSettingsWriteScope] : []),
     ...(changesProviders ? [AuthProvidersManageScope] : []),

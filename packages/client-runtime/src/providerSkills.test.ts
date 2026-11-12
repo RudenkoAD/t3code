@@ -1,15 +1,20 @@
 import {
   EnvironmentId,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ServerSettings,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   createProviderWorkspaceSnapshotRefreshAtomFamily,
+  filterDeniedProviderSkills,
+  filterDeniedSkillSlashCommands,
   getProviderSkillsForSlashMenu,
   hasCompleteProviderWorkspaceSnapshot,
   isProviderWorkspaceSnapshotScanning,
@@ -92,6 +97,47 @@ describe("getProviderSkillsForSlashMenu", () => {
     ];
 
     expect(getProviderSkillsForSlashMenu(skills, true)).toEqual([enabledSkill]);
+  });
+});
+
+describe("project profile skill denials", () => {
+  it("filters denied skills and their native slash aliases only for the assigned project profile", () => {
+    const projectId = ProjectId.make("project-a");
+    const settings: Pick<ServerSettings, "projectProfiles" | "projectSettingsOverrides"> = {
+      ...DEFAULT_SERVER_SETTINGS,
+      projectProfiles: { [projectId]: "work" },
+      projectSettingsOverrides: {
+        [projectId]: {
+          profileToolAccess: {
+            work: { skills: { claude: { review: true } } },
+            personal: { skills: { claude: { release: true } } },
+          },
+        },
+      },
+    };
+    const skills = [
+      { name: "review", path: "/user/review/SKILL.md", enabled: true },
+      { name: "release", path: "/project/release/SKILL.md", enabled: true },
+    ];
+    const slashCommands = [{ name: "review" }, { name: "compact" }];
+
+    expect(
+      filterDeniedProviderSkills(skills, settings, projectId, "claude").map((x) => x.name),
+    ).toEqual(["release"]);
+    expect(
+      filterDeniedSkillSlashCommands(slashCommands, skills, settings, projectId, "claude").map(
+        (x) => x.name,
+      ),
+    ).toEqual(["compact"]);
+    expect(filterDeniedProviderSkills(skills, settings, projectId, "codex")).toEqual(skills);
+    expect(filterDeniedProviderSkills(skills, settings, null, "claude")).toEqual(skills);
+    const personalSettings: typeof settings = {
+      ...settings,
+      projectProfiles: { [projectId]: "personal" },
+    };
+    expect(
+      filterDeniedProviderSkills(skills, personalSettings, projectId, "claude").map((x) => x.name),
+    ).toEqual(["review"]);
   });
 });
 

@@ -131,6 +131,15 @@ beforeEach(() => {
 });
 
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
+function fullAccessPermissionModeUnderClaudeSettings(
+  settings: Awaited<ReturnType<typeof ClaudeSdk.resolveSettings>>,
+) {
+  const permissions = settings.effective.permissions;
+  const bypassDisabled = permissions?.disableBypassPermissionsMode === "disable";
+  const autoDisabled =
+    settings.effective.disableAutoMode === "disable" || permissions?.disableAutoMode === "disable";
+  return bypassDisabled ? (autoDisabled ? "default" : "auto") : "bypassPermissions";
+}
 const AUTO_COMPACT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
   autoCompactWindow: "300000",
 });
@@ -265,6 +274,40 @@ function makeClaudeTestTurnInput(input: {
 }
 
 describe("ClaudeAdapterV2 runtime query policy", () => {
+  it("adds project-native denials to Claude's per-query settings without replacing existing policy", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-tool-policy",
+      resume: true,
+      cwd: "/workspace",
+      sdkSettings: {
+        deniedMcpServers: [{ serverName: "organization-denied" }],
+        skillOverrides: { existing: "name-only" },
+      },
+      disallowedTools: ["Edit"],
+      nativeToolPolicy: {
+        deniedMcpServers: ["project-denied"],
+        deniedSkills: ["private-skill", "test-plugin:review", "bad name", "*"],
+      },
+    });
+
+    assert.deepEqual(options.settings, {
+      deniedMcpServers: [{ serverName: "organization-denied" }, { serverName: "project-denied" }],
+      skillOverrides: {
+        existing: "name-only",
+        "private-skill": "off",
+        "test-plugin:review": "off",
+      },
+      showThinkingSummaries: true,
+    });
+    assert.deepEqual(options.disallowedTools, [
+      "Edit",
+      "Skill(private-skill)",
+      "Skill(test-plugin:review)",
+    ]);
+    assert.isUndefined(options.strictMcpConfig);
+  });
+
   it.each([
     "-- --thinking-display omitted",
     "--thinking-display summarized -- --thinking-display omitted",
@@ -3889,6 +3932,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
         );
         vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+        const hostManagedPolicy = yield* Effect.promise(() =>
+          sdk.resolveSettings({
+            cwd,
+            settingSources: ["project", "local"],
+            serverManagedSettings: { permissions: {} },
+          }),
+        );
+        const unrestrictedPermissionMode =
+          fullAccessPermissionModeUnderClaudeSettings(hostManagedPolicy);
         const openWith = (launchArgs: string) =>
           Effect.scoped(
             Effect.gen(function* () {
@@ -3934,8 +3986,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
         const unrestricted = yield* open;
-        assert.equal(unrestricted.permissionMode, "bypassPermissions");
-        assert.equal(unrestricted.allowDangerouslySkipPermissions, true);
+        assert.equal(unrestricted.permissionMode, unrestrictedPermissionMode);
+        assert.equal(
+          unrestricted.allowDangerouslySkipPermissions,
+          unrestrictedPermissionMode === "bypassPermissions" ? true : undefined,
+        );
         yield* fileSystem.writeFileString(
           remoteFile,
           JSON.stringify({
@@ -3952,7 +4007,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         assert.equal((yield* open).permissionMode, "auto");
         yield* fileSystem.remove(remoteFile);
-        assert.equal((yield* open).permissionMode, "bypassPermissions");
+        assert.equal((yield* open).permissionMode, unrestrictedPermissionMode);
         const launchRestricted = yield* openWith(
           `--settings '{"permissions":{"disableBypassPermissionsMode":"disable"}}'`,
         );
@@ -3984,6 +4039,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
         );
         vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+        const hostManagedPolicy = yield* Effect.promise(() =>
+          sdk.resolveSettings({ cwd, settingSources: ["project", "local"] }),
+        );
+        const unrestrictedPermissionMode =
+          fullAccessPermissionModeUnderClaudeSettings(hostManagedPolicy);
         const openWith = (settings: Record<string, unknown>) =>
           Effect.scoped(
             Effect.gen(function* () {
@@ -4025,7 +4085,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           permissions: { disableBypassPermissionsMode: false, disableAutoMode: false, allow: [] },
           env: { KEPT: "1" },
         });
-        assert.equal(unrestricted.permissionMode, "bypassPermissions");
+        assert.equal(unrestricted.permissionMode, unrestrictedPermissionMode);
         assert.notProperty(unrestricted.settings, "disableAutoMode");
         assert.deepEqual(unrestricted.settings.permissions, { allow: [] });
         assert.equal(unrestricted.settings.env?.KEPT, "1");
@@ -9637,7 +9697,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const scenario = { name: transcript.scenario, transcript, ...materialized };
       yield* Effect.gen(function* () {
         const result = yield* runOrchestratorV2Scenario(scenario);
-        assertBaseProjection({ result, transcript, runCount: 1, runStatuses: ["completed"] });
+        assertBaseProjection({
+          result,
+          transcript,
+          runCount: 1,
+          runStatuses: ["completed"],
+          providerInstanceId: ProviderInstanceId.make("t3profile_personal_claudeAgent"),
+        });
         const projection = projectionFor(result, transcript.scenario);
         assertSemanticProjectionIntegrity(projection);
         const plans = projection.plans.filter((plan) => plan.kind === "todo_list");

@@ -1,6 +1,7 @@
 import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import { buildCodexThreadPolicyConfig } from "../../provider/codexProjectPolicy.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -1403,9 +1404,35 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 const CODEX_T3_DIRECT_MCP_SERVER = "t3-code-direct";
 const CODEX_DIRECT_ONLY_T3_TOOL = "t3_thread_wait";
 
+class CodexNativeToolPolicyResolutionError extends Schema.TaggedError<CodexNativeToolPolicyResolutionError>()(
+  "CodexNativeToolPolicyResolutionError",
+  {},
+) {
+  override get message(): string {
+    return "Codex native skills could not be resolved for project tool policy.";
+  }
+}
+
+function sameNativeToolPolicy(
+  left: McpProviderSession.McpProviderSessionConfig["nativeToolPolicy"],
+  right: McpProviderSession.McpProviderSessionConfig["nativeToolPolicy"],
+): boolean {
+  const sameNames = (a: ReadonlyArray<string> = [], b: ReadonlyArray<string> = []) =>
+    a.length === b.length && a.every((name, index) => name === b[index]);
+  return (
+    sameNames(left?.deniedMcpServers, right?.deniedMcpServers) &&
+    sameNames(left?.deniedSkills, right?.deniedSkills)
+  );
+}
+
 function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+  readonly nativeToolPolicyConfig?: {
+    readonly mcpServers?: Readonly<Record<string, Schema.Json>>;
+    readonly nativeSkills?: ReadonlyArray<{ readonly path: string; readonly enabled: boolean }>;
+    readonly deniedSkillPaths?: ReadonlyArray<string>;
+  };
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
@@ -1422,31 +1449,107 @@ function codexThreadRuntimeParams(input: {
           tool_timeout_sec: CODEX_T3_MCP_TOOL_TIMEOUT_SEC,
           http_headers: { Authorization: mcpSession.authorizationHeader },
         };
+  const config: Record<string, Schema.Json> = {
+    ...CODEX_THREAD_CONFIG,
+    ...(input.nativeToolPolicyConfig?.mcpServers === undefined
+      ? {}
+      : { mcp_servers: input.nativeToolPolicyConfig.mcpServers }),
+    // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
+    ...(input.threadId === null
+      ? {}
+      : { [`shell_environment_policy.set.${PortScanner.AGENT_THREAD_ENV}`]: input.threadId }),
+    ...(t3Server === undefined
+      ? {}
+      : {
+          // Override only T3's servers so launch-argument MCP servers survive.
+          "mcp_servers.t3-code": { ...t3Server, disabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL] },
+          // Code Mode runs a blocking wait as a nested call, and the model keeps working
+          // around it. A second, direct-only registration makes it a plain tool call.
+          [`mcp_servers.${CODEX_T3_DIRECT_MCP_SERVER}`]: {
+            ...t3Server,
+            enabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL],
+            omit_tools_from: ["code_mode", "deferred"],
+          },
+        }),
+  };
+  const withSkillPolicy =
+    input.nativeToolPolicyConfig?.nativeSkills === undefined
+      ? config
+      : buildCodexThreadPolicyConfig({
+          baseConfig: config,
+          nativeSkills: input.nativeToolPolicyConfig.nativeSkills,
+          deniedSkillPaths: input.nativeToolPolicyConfig.deniedSkillPaths ?? [],
+        });
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
-    config: {
-      ...CODEX_THREAD_CONFIG,
-      // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
-      ...(input.threadId === null
-        ? {}
-        : { [`shell_environment_policy.set.${PortScanner.AGENT_THREAD_ENV}`]: input.threadId }),
-      ...(t3Server === undefined
-        ? {}
-        : {
-            // Override only T3's servers so launch-argument MCP servers survive.
-            "mcp_servers.t3-code": { ...t3Server, disabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL] },
-            // Code Mode runs a blocking wait as a nested call, and the model keeps working
-            // around it. A second, direct-only registration makes it a plain tool call.
-            [`mcp_servers.${CODEX_T3_DIRECT_MCP_SERVER}`]: {
-              ...t3Server,
-              enabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL],
-              omit_tools_from: ["code_mode", "deferred"],
-            },
-          }),
-    },
+    config: withSkillPolicy as Readonly<Record<string, Schema.Json>>,
   };
 }
+
+/**
+ * Codex exposes per-thread config overrides for MCP servers and skill config. Resolve skill
+ * paths from the same app-server/home/cwd as the target thread so the override remains scoped
+ * to this thread and never writes to a user's shared config.
+ */
+const codexNativeToolPolicyConfig = Effect.fn("CodexAdapterV2.nativeToolPolicyConfig")(
+  function* (input: {
+    readonly client: CodexClient.CodexAppServerClient["Service"];
+    readonly cwd: string | null | undefined;
+    readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+    readonly refreshSkills?: boolean;
+  }) {
+    const policy = input.mcpSession?.nativeToolPolicy;
+    const deniedMcpServers = policy?.deniedMcpServers ?? [];
+    const deniedSkills = policy?.deniedSkills ?? [];
+    if (
+      deniedMcpServers.length === 0 &&
+      deniedSkills.length === 0 &&
+      input.refreshSkills !== true
+    ) {
+      return undefined;
+    }
+
+    // These names are reserved for T3's own service and remain governed by T3 tool-access
+    // settings, not profile-native MCP policy.
+    const deniedNativeMcpServers = deniedMcpServers.filter(
+      (name) => name !== "t3-code" && name !== CODEX_T3_DIRECT_MCP_SERVER,
+    );
+    const mcpServers =
+      deniedNativeMcpServers.length === 0
+        ? undefined
+        : Object.fromEntries(deniedNativeMcpServers.map((name) => [name, { enabled: false }]));
+
+    let nativeSkills:
+      | ReadonlyArray<{ readonly path: string; readonly enabled: boolean }>
+      | undefined;
+    let deniedSkillPaths: ReadonlyArray<string> = [];
+    if ((deniedSkills.length > 0 || input.refreshSkills === true) && input.cwd) {
+      const response = yield* input.client.request("skills/list", { cwds: [input.cwd] });
+      const skillEntry =
+        response.data.find((entry) => entry.cwd === input.cwd) ??
+        (response.data.length === 1 ? response.data[0] : undefined);
+      if (skillEntry === undefined || skillEntry.errors.length > 0) {
+        return yield* new CodexNativeToolPolicyResolutionError();
+      }
+      const skills = skillEntry.skills;
+      const deniedSkillNames = new Set(deniedSkills);
+      nativeSkills = skills.map(({ path, enabled }) => ({ path, enabled }));
+      deniedSkillPaths = Array.from(
+        new Set(
+          skills.filter((skill) => deniedSkillNames.has(skill.name)).map((skill) => skill.path),
+        ),
+      );
+    } else if (deniedSkills.length > 0 || input.refreshSkills === true) {
+      return yield* new CodexNativeToolPolicyResolutionError();
+    }
+    if (mcpServers === undefined && nativeSkills === undefined) return undefined;
+    return {
+      ...(mcpServers === undefined ? {} : { mcpServers }),
+      ...(nativeSkills === undefined ? {} : { nativeSkills, deniedSkillPaths }),
+    };
+  },
+);
 
 const decodeCodexResumeMetadata = Schema.decodeUnknownEffect(
   Schema.Struct({ thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }) }),
@@ -1762,6 +1865,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
         });
+        const loadedNativeThreads = new Set<string>();
+        const appliedNativeToolPolicyByThread = new Map<
+          string,
+          McpProviderSession.McpProviderSessionConfig["nativeToolPolicy"]
+        >();
+        const nativeThreadCwdByThread = new Map<string, string | null>();
+        const markNativeThreadLoaded = (
+          nativeThreadId: string,
+          mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+          cwd?: string | null,
+        ) => {
+          appliedNativeToolPolicyByThread.set(nativeThreadId, mcpSession?.nativeToolPolicy);
+          if (cwd !== undefined) nativeThreadCwdByThread.set(nativeThreadId, cwd);
+          loadedNativeThreads.add(nativeThreadId);
+        };
         const additionalContextByThread = yield* Ref.make(
           new Map<
             string,
@@ -6985,6 +7103,32 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         });
 
+        const resumeNativeThreadWithPolicy = Effect.fn(
+          "CodexAdapterV2.resumeNativeThreadWithPolicy",
+        )(function* (input: {
+          readonly nativeThreadId: string;
+          readonly appThreadId: ThreadId | null;
+          readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+          readonly cwd?: string | null;
+          readonly params: Record<string, unknown>;
+        }) {
+          const wasApplied = appliedNativeToolPolicyByThread.has(input.nativeThreadId);
+          const previousPolicy = appliedNativeToolPolicyByThread.get(input.nativeThreadId);
+          if (
+            loadedNativeThreads.has(input.nativeThreadId) &&
+            wasApplied &&
+            !sameNativeToolPolicy(previousPolicy, input.mcpSession?.nativeToolPolicy)
+          ) {
+            // Codex caches prompt/skill context for subscribed threads. Unsubscribe only this
+            // idle native thread before resume so changed and removed denials both take effect.
+            yield* client.request("thread/unsubscribe", { threadId: input.nativeThreadId });
+            loadedNativeThreads.delete(input.nativeThreadId);
+          }
+          const response = yield* resumeNativeThread(input.nativeThreadId, input.params);
+          markNativeThreadLoaded(input.nativeThreadId, input.mcpSession, input.cwd);
+          return response;
+        });
+
         const startNativeTurn = Effect.fn("CodexAdapterV2.startNativeTurn")(
           function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -7303,17 +7447,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
-              Effect.andThen(mcpSessions.read(threadInput.threadId)),
-              Effect.flatMap((mcpSession) =>
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    threadId: threadInput.threadId,
+              Effect.andThen(
+                Effect.gen(function* () {
+                  const mcpSession = yield* mcpSessions.read(threadInput.threadId);
+                  const nativeToolPolicyConfig = yield* codexNativeToolPolicyConfig({
+                    client,
+                    cwd: threadInput.runtimePolicy.cwd,
                     mcpSession,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                ),
+                  });
+                  const response = yield* client.request(
+                    "thread/start",
+                    codexThreadRuntimeParams({
+                      threadId: threadInput.threadId,
+                      mcpSession,
+                      ...(nativeToolPolicyConfig === undefined ? {} : { nativeToolPolicyConfig }),
+                      modelSelection: threadInput.modelSelection,
+                      runtimePolicy: threadInput.runtimePolicy,
+                    }),
+                  );
+                  markNativeThreadLoaded(
+                    response.thread.id,
+                    mcpSession,
+                    threadInput.runtimePolicy.cwd,
+                  );
+                  return response;
+                }),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
@@ -7338,18 +7496,38 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (threadInput) {
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
               const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
-              const resume = resumeNativeThread(nativeThreadId, {
-                excludeTurns: true,
-                ...codexThreadRuntimeParams({
-                  threadId: appThreadId,
-                  mcpSession: yield* readMcpSession(appThreadId),
-                  ...(threadInput.modelSelection === undefined
-                    ? {}
-                    : { modelSelection: threadInput.modelSelection }),
-                  ...(threadInput.runtimePolicy === undefined
-                    ? {}
-                    : { runtimePolicy: threadInput.runtimePolicy }),
-                }),
+              const mcpSession = yield* readMcpSession(appThreadId);
+              const resumeCwd =
+                threadInput.runtimePolicy?.cwd ?? nativeThreadCwdByThread.get(nativeThreadId);
+              const previousNativePolicy = appliedNativeToolPolicyByThread.get(nativeThreadId);
+              const refreshSkills =
+                (previousNativePolicy?.deniedSkills.length ?? 0) > 0 ||
+                (mcpSession?.nativeToolPolicy?.deniedSkills.length ?? 0) > 0;
+              const nativeToolPolicyConfig = yield* codexNativeToolPolicyConfig({
+                client,
+                cwd: resumeCwd,
+                mcpSession,
+                ...(refreshSkills ? { refreshSkills: true } : {}),
+              });
+              const resume = resumeNativeThreadWithPolicy({
+                nativeThreadId,
+                appThreadId,
+                mcpSession,
+                ...(resumeCwd === undefined ? {} : { cwd: resumeCwd }),
+                params: {
+                  excludeTurns: true,
+                  ...codexThreadRuntimeParams({
+                    threadId: appThreadId,
+                    mcpSession,
+                    ...(nativeToolPolicyConfig === undefined ? {} : { nativeToolPolicyConfig }),
+                    ...(threadInput.modelSelection === undefined
+                      ? {}
+                      : { modelSelection: threadInput.modelSelection }),
+                    ...(threadInput.runtimePolicy === undefined
+                      ? {}
+                      : { runtimePolicy: threadInput.runtimePolicy }),
+                  }),
+                },
               });
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(resume),
@@ -7523,6 +7701,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const nativeThreadId = yield* getNativeThreadId(unloadInput.providerThread);
               sessionApprovals.delete(nativeThreadId);
               yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
+              loadedNativeThreads.delete(nativeThreadId);
             },
             (effect, unloadInput) =>
               effect.pipe(
@@ -8112,14 +8291,34 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }
               // thread/revert requires the thread loaded in this app-server; resume after restart or idle release.
               if (!loaded) {
-                yield* resumeNativeThread(threadId, {
-                  excludeTurns: true,
-                  ...codexThreadRuntimeParams({
-                    threadId: threadInput.providerThread.appThreadId,
-                    mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
-                    modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
-                  }),
+                const mcpSession = yield* readMcpSession(threadInput.providerThread.appThreadId);
+                const appThreadId = threadInput.providerThread.appThreadId;
+                const resumeCwd = input.runtimePolicy.cwd ?? nativeThreadCwdByThread.get(threadId);
+                const previousNativePolicy = appliedNativeToolPolicyByThread.get(threadId);
+                const refreshSkills =
+                  (previousNativePolicy?.deniedSkills.length ?? 0) > 0 ||
+                  (mcpSession?.nativeToolPolicy?.deniedSkills.length ?? 0) > 0;
+                const nativeToolPolicyConfig = yield* codexNativeToolPolicyConfig({
+                  client,
+                  cwd: resumeCwd,
+                  mcpSession,
+                  ...(refreshSkills ? { refreshSkills: true } : {}),
+                });
+                yield* resumeNativeThreadWithPolicy({
+                  nativeThreadId: threadId,
+                  appThreadId,
+                  mcpSession,
+                  ...(resumeCwd === undefined ? {} : { cwd: resumeCwd }),
+                  params: {
+                    excludeTurns: true,
+                    ...codexThreadRuntimeParams({
+                      threadId: appThreadId,
+                      mcpSession,
+                      ...(nativeToolPolicyConfig === undefined ? {} : { nativeToolPolicyConfig }),
+                      modelSelection: input.modelSelection,
+                      runtimePolicy: input.runtimePolicy,
+                    }),
+                  },
                 });
               }
               const response = yield* ensureInitialized.pipe(
@@ -8160,12 +8359,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (threadInput) {
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
               const boundary = yield* resolveCodexForkBoundary(threadInput);
+              const mcpSession = yield* mcpSessions.read(threadInput.targetThreadId);
+              const nativeToolPolicyConfig = yield* codexNativeToolPolicyConfig({
+                client,
+                cwd: threadInput.runtimePolicy?.cwd,
+                mcpSession,
+              });
               const fork = client.request("thread/fork", {
                 threadId,
                 ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
                 ...codexThreadRuntimeParams({
                   threadId: threadInput.targetThreadId,
-                  mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
+                  mcpSession,
+                  ...(nativeToolPolicyConfig === undefined ? {} : { nativeToolPolicyConfig }),
                   ...(threadInput.modelSelection === undefined
                     ? {}
                     : { modelSelection: threadInput.modelSelection }),
@@ -8195,6 +8401,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       cause,
                     }),
                 ),
+              );
+              markNativeThreadLoaded(
+                response.thread.id,
+                mcpSession,
+                threadInput.runtimePolicy?.cwd,
               );
               let forkedThread = response.thread;
               if (boundary.rollbackTurnCount > 0) {

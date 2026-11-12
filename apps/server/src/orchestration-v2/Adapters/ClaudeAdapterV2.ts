@@ -1767,6 +1767,11 @@ export function makeClaudeQueryOptions(input: {
   readonly sdkSettings?: string | ClaudeSdkSettings;
   readonly environment?: NodeJS.ProcessEnv;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
+  /** Project/profile native MCP and skill denials resolved for this thread. */
+  readonly nativeToolPolicy?: {
+    readonly deniedMcpServers: ReadonlyArray<string>;
+    readonly deniedSkills: ReadonlyArray<string>;
+  };
   /** The thread's T3 MCP session holds the `device` capability. */
   readonly deviceToolsAvailable?: boolean;
   readonly tools?: ClaudeAgentSdkQueryTools;
@@ -1836,6 +1841,43 @@ export function makeClaudeQueryOptions(input: {
           ...compactQuerySettings,
           env: { ...compactQuerySettings?.env, ENABLE_TOOL_SEARCH: input.toolSearchOverride },
         } as ClaudeSdkSettings);
+  const nativePolicy = input.nativeToolPolicy;
+  const effectivePolicySkills =
+    nativePolicy?.deniedSkills.filter(isSafeClaudeSkillPolicyName) ?? [];
+  const disallowedTools = Array.from(
+    new Set([
+      ...(input.disallowedTools ?? []),
+      ...effectivePolicySkills.map((name) => `Skill(${name})`),
+    ]),
+  );
+  const policyBaseSettings =
+    typeof effectiveQuerySettings === "object" && effectiveQuerySettings !== null
+      ? effectiveQuerySettings
+      : undefined;
+  const policySettings =
+    nativePolicy !== undefined &&
+    (nativePolicy.deniedMcpServers.length > 0 || nativePolicy.deniedSkills.length > 0) &&
+    (effectiveQuerySettings === undefined || typeof effectiveQuerySettings === "object")
+      ? ({
+          ...policyBaseSettings,
+          ...(nativePolicy.deniedMcpServers.length === 0
+            ? {}
+            : {
+                deniedMcpServers: [
+                  ...(policyBaseSettings?.deniedMcpServers ?? []),
+                  ...nativePolicy.deniedMcpServers.map((serverName) => ({ serverName })),
+                ],
+              }),
+          ...(effectivePolicySkills.length === 0
+            ? {}
+            : {
+                skillOverrides: {
+                  ...policyBaseSettings?.skillOverrides,
+                  ...Object.fromEntries(effectivePolicySkills.map((name) => [name, "off"])),
+                },
+              }),
+        } as ClaudeSdkSettings)
+      : effectiveQuerySettings;
   const deviceInstructions = input.mcpServers !== undefined && input.deviceToolsAvailable === true;
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
@@ -1857,7 +1899,7 @@ export function makeClaudeQueryOptions(input: {
     ...threadIdentity,
     ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
-    ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
+    ...(disallowedTools.length === 0 ? {} : { disallowedTools }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
     ...(input.allowDangerouslySkipPermissions === true
       ? { allowDangerouslySkipPermissions: true }
@@ -1866,16 +1908,16 @@ export function makeClaudeQueryOptions(input: {
       ? {
           thinking: { type: "adaptive" as const, display: "summarized" as const },
           settings:
-            typeof effectiveQuerySettings === "string"
-              ? effectiveQuerySettings
+            typeof policySettings === "string"
+              ? policySettings
               : {
-                  ...effectiveQuerySettings,
+                  ...policySettings,
                   showThinkingSummaries: true,
                 },
         }
-      : effectiveQuerySettings === undefined
+      : policySettings === undefined
         ? {}
-        : { settings: effectiveQuerySettings }),
+        : { settings: policySettings }),
     ...(input.onUserDialog === undefined ? {} : { onUserDialog: input.onUserDialog }),
     ...(input.onElicitation === undefined ? {} : { onElicitation: input.onElicitation }),
     ...(input.supportedDialogKinds === undefined
@@ -3032,6 +3074,10 @@ export function claudeEffectiveQueryPolicyKey(
     readonly allowedTools?: ReadonlyArray<string>;
     readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   },
+  nativeToolPolicy?: {
+    readonly deniedMcpServers: ReadonlyArray<string>;
+    readonly deniedSkills: ReadonlyArray<string>;
+  },
 ): string {
   return JSON.stringify({
     runtimePolicy: claudeRuntimeQueryPolicyKey({
@@ -3041,6 +3087,7 @@ export function claudeEffectiveQueryPolicyKey(
         : { allowedTools: mcpOverrides.allowedTools }),
     }),
     mcpServers: mcpOverrides.mcpServers,
+    nativeToolPolicy,
   });
 }
 
@@ -3057,6 +3104,10 @@ interface ClaudeToolClassification {
 
 function normalizedClaudeToolName(toolName: string): string {
   return toolName.toLowerCase().replaceAll(/[\s_-]/g, "");
+}
+
+function isSafeClaudeSkillPolicyName(name: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]*(?::[a-zA-Z0-9][a-zA-Z0-9._-]*)?$/.test(name);
 }
 
 const CLAUDE_KNOWN_TOOL_CLASSIFICATIONS: Record<
@@ -5103,23 +5154,31 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     return "";
   });
 
-  const userInvocableSkills = (cwd: string | null) =>
-    discoverClaudeSkills(
-      adapterOptions.settings,
-      cwd ?? undefined,
-      adapterOptions.environment,
-    ).pipe(
-      Effect.map(
-        (skills) =>
-          new Map(
-            skills
-              .filter((skill) => skill.enabled && skill.userInvocable !== false)
-              .map((skill) => [skill.name, skill]),
-          ),
-      ),
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
+  const userInvocableSkills = Effect.fn("ClaudeAdapterV2.userInvocableSkills")(
+    function* (cwd: string | null, threadId: ThreadId) {
+      const mcpSession = yield* mcpSessions.read(threadId);
+      const denied = new Set(mcpSession?.nativeToolPolicy?.deniedSkills ?? []);
+      return yield* discoverClaudeSkills(
+        adapterOptions.settings,
+        cwd ?? undefined,
+        adapterOptions.environment,
+      ).pipe(
+        Effect.map(
+          (skills) =>
+            new Map(
+              skills
+                .filter(
+                  (skill) =>
+                    skill.enabled && skill.userInvocable !== false && !denied.has(skill.name),
+                )
+                .map((skill) => [skill.name, skill]),
+            ),
+        ),
+      );
+    },
+    Effect.provideService(FileSystem.FileSystem, fileSystem),
+    Effect.provideService(Path.Path, path),
+  );
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
@@ -10919,7 +10978,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const queryPolicyKey = claudeEffectiveQueryPolicyKey(
+            queryPolicy,
+            mcpOverrides,
+            mcpSession?.nativeToolPolicy,
+          );
           const compiledSelection = compileClaudeModelSelection(
             turnInput.modelSelection,
             modelCatalog,
@@ -11066,6 +11129,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(mcpOverrides.mcpServers === undefined
               ? {}
               : { mcpServers: mcpOverrides.mcpServers }),
+            ...(mcpSession?.nativeToolPolicy === undefined
+              ? {}
+              : { nativeToolPolicy: mcpSession.nativeToolPolicy }),
             deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
             permissionMode: queryPolicy.permissionMode,
             ...(queryPolicy.allowDangerouslySkipPermissions === undefined
@@ -11301,7 +11367,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     attachmentsDir,
                     fileSystem,
                     pdfReservation,
-                    skills: yield* userInvocableSkills(turnInput.runtimePolicy.cwd),
+                    skills: yield* userInvocableSkills(
+                      turnInput.runtimePolicy.cwd,
+                      turnInput.threadId,
+                    ),
                     uuid: promptUuid,
                   }).pipe(
                     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -11765,7 +11834,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               attachmentsDir,
               fileSystem,
               pdfReservation,
-              skills: yield* userInvocableSkills(currentTurn.input.runtimePolicy.cwd),
+              skills: yield* userInvocableSkills(
+                currentTurn.input.runtimePolicy.cwd,
+                currentTurn.input.threadId,
+              ),
             }).pipe(
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
               Effect.provideService(Path.Path, path),

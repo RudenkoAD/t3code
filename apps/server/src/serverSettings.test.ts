@@ -278,6 +278,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       });
     }).pipe(Effect.provide(layerServerSettings())),
   );
+  it.effect("persists sparse profile tool denials and merges per-name resets", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const projectId = ProjectId.make("profile-tools");
+      yield* service.updateSettings({
+        projectProfileToolAccessOverrides: {
+          [projectId]: { work: { mcpServers: { codex: { "docs-search": true } } } },
+        },
+      });
+      yield* service.updateSettings({
+        projectProfileToolAccessOverrides: {
+          [projectId]: { work: { skills: { claude: { "review-skill": true } } } },
+        },
+      });
+      const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
+      assert.deepEqual(persisted.projectSettingsOverrides[projectId].profileToolAccess, {
+        work: {
+          mcpServers: { codex: { "docs-search": true } },
+          skills: { claude: { "review-skill": true } },
+        },
+      });
+
+      yield* service.updateSettings({
+        projectProfileToolAccessOverrides: {
+          [projectId]: { work: { mcpServers: { codex: { "docs-search": null } } } },
+        },
+      });
+      const stored = yield* service.getSettings;
+      assert.deepEqual(stored.projectSettingsOverrides[projectId]?.profileToolAccess, {
+        work: { skills: { claude: { "review-skill": true } } },
+      });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
 
   it.effect("moves an idle compaction mode saved in the legacy switch to its own field", () =>
     Effect.gen(function* () {

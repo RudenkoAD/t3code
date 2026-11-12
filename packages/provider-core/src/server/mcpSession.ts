@@ -1,4 +1,10 @@
 import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+
+export const NativeProjectToolPolicy = Schema.Struct({
+  deniedMcpServers: Schema.Array(Schema.String),
+  deniedSkills: Schema.Array(Schema.String),
+});
 
 export interface McpProviderSessionConfig {
   readonly environmentId: EnvironmentId;
@@ -10,6 +16,7 @@ export interface McpProviderSessionConfig {
   /** Omit preview_* instructions when the user withholds agent browser access. */
   readonly browserToolsAvailable: boolean;
   readonly capabilities?: ReadonlySet<string>;
+  readonly nativeToolPolicy?: typeof NativeProjectToolPolicy.Type | undefined;
   readonly agentDeviceEnvironment?: Readonly<Record<string, string>>;
 }
 
