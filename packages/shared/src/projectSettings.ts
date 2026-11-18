@@ -125,7 +125,6 @@ function resolveProjectProviderSelections(
       settings.providerInstances,
       (instanceId) => resolveProjectProviderInstanceEnabled(settings, projectId, instanceId),
       {
-        includeConfiguredInstances: true,
         defaultModelSelection:
           ((effective ?? resolved.settings).defaultModelSelection as ModelSelection | null) ?? null,
       },

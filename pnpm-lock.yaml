@@ -274,6 +274,7 @@ overrides:
   micromark: 4.0.2
   mdast-util-to-hast: 13.2.1
   alchemy: 2.0.0-beta.85
+  unenv: 2.0.0-rc.24
   expo-audio: 58.0.11
   expo-network: 58.0.4
   '@clerk/expo-native-components': 0.4.4
@@ -893,12 +894,12 @@ importers:
       '@t3tools/provider-pi':
         specifier: workspace:*
         version: link:../../packages/provider-pi
-      '@t3tools/source-control-azure-devops':
-        specifier: workspace:*
-        version: link:../../packages/source-control-azure-devops
       '@t3tools/source-control-arcanum':
         specifier: workspace:*
         version: link:../../packages/source-control-arcanum
+      '@t3tools/source-control-azure-devops':
+        specifier: workspace:*
+        version: link:../../packages/source-control-azure-devops
       '@t3tools/source-control-bitbucket':
         specifier: workspace:*
         version: link:../../packages/source-control-bitbucket
@@ -2145,6 +2146,28 @@ importers:
         specifier: 1.4.0
         version: 1.4.0(@astrojs/compiler-rs@0.5.1)(@types/node@24.12.4)(@vitest/browser-playwright@5.0.5)(@vitest/ui@5.0.5)(@volar/typescript@2.4.28(typescript@6.0.3))(bufferutil@4.1.0)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.1.0(@noble/hashes@1.8.0))(playwright@1.64.1)(terser@5.48.0)(typescript@6.0.3)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)
 
+  packages/source-control-arcanum:
+    dependencies:
+      '@t3tools/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@t3tools/source-control-core':
+        specifier: workspace:*
+        version: link:../source-control-core
+      effect:
+        specifier: 4.1.2
+        version: 4.1.2
+    devDependencies:
+      '@effect/vitest':
+        specifier: 4.1.2
+        version: 4.1.2(patch_hash=299510b71c36537a832a67e9d160a5f112a5f326a29e95c41cb45fc8234e47c7)(@astrojs/compiler-rs@0.5.1)(@types/node@24.12.4)(@vitest/browser-playwright@5.0.5)(@vitest/ui@5.0.5)(@volar/typescript@2.4.28(typescript@6.0.3))(bufferutil@4.1.0)(effect@4.1.2)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.1.0(@noble/hashes@1.8.0))(playwright@1.64.1)(terser@5.48.0)(typescript@6.0.3)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)
+      '@types/node':
+        specifier: 24.12.4
+        version: 24.12.4
+      vite-plus:
+        specifier: 1.4.0
+        version: 1.4.0(@astrojs/compiler-rs@0.5.1)(@types/node@24.12.4)(@vitest/browser-playwright@5.0.5)(@vitest/ui@5.0.5)(@volar/typescript@2.4.28(typescript@6.0.3))(bufferutil@4.1.0)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.1.0(@noble/hashes@1.8.0))(playwright@1.64.1)(terser@5.48.0)(typescript@6.0.3)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)
+
   packages/source-control-azure-devops:
     dependencies:
       '@t3tools/contracts':
@@ -2268,12 +2291,12 @@ importers:
 
   packages/source-control-definitions:
     dependencies:
-      '@t3tools/source-control-azure-devops':
-        specifier: workspace:*
-        version: link:../source-control-azure-devops
       '@t3tools/source-control-arcanum':
         specifier: workspace:*
         version: link:../source-control-arcanum
+      '@t3tools/source-control-azure-devops':
+        specifier: workspace:*
+        version: link:../source-control-azure-devops
       '@t3tools/source-control-bitbucket':
         specifier: workspace:*
         version: link:../source-control-bitbucket
@@ -2295,31 +2318,6 @@ importers:
       '@t3tools/source-control-gitlab':
         specifier: workspace:*
         version: link:../source-control-gitlab
-
-  packages/source-control-arcanum:
-    dependencies:
-      '@t3tools/contracts':
-        specifier: workspace:*
-        version: link:../contracts
-      '@t3tools/shared':
-        specifier: workspace:*
-        version: link:../shared
-      '@t3tools/source-control-core':
-        specifier: workspace:*
-        version: link:../source-control-core
-      effect:
-        specifier: 4.1.2
-        version: 4.1.2
-    devDependencies:
-      '@effect/vitest':
-        specifier: 4.1.2
-        version: 4.1.2(patch_hash=299510b71c36537a832a67e9d160a5f112a5f326a29e95c41cb45fc8234e47c7)(@astrojs/compiler-rs@0.5.1)(@types/node@24.12.4)(@vitest/browser-playwright@5.0.5)(@vitest/ui@5.0.5)(@volar/typescript@2.4.28(typescript@6.0.3))(bufferutil@4.1.0)(effect@4.1.2)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.1.0(@noble/hashes@1.8.0))(playwright@1.64.1)(terser@5.48.0)(typescript@6.0.3)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)
-      '@types/node':
-        specifier: 24.12.4
-        version: 24.12.4
-      vite-plus:
-        specifier: 1.4.0
-        version: 1.4.0(@astrojs/compiler-rs@0.5.1)(@types/node@24.12.4)(@vitest/browser-playwright@5.0.5)(@vitest/ui@5.0.5)(@volar/typescript@2.4.28(typescript@6.0.3))(bufferutil@4.1.0)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.1.0(@noble/hashes@1.8.0))(playwright@1.64.1)(terser@5.48.0)(typescript@6.0.3)(unrun@0.2.39)(utf-8-validate@6.0.6)(yaml@2.9.0)
 
   packages/source-control-forgejo:
     dependencies:

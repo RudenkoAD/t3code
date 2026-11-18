@@ -102,8 +102,6 @@ import {
   PersistChatAttachmentsError,
   RpcClientId,
   EnvironmentAuthorizationError,
-  type ProjectId,
-  type ProviderDriverKind,
   ProviderInstanceId,
   ProjectToolsInventoryError,
   type ProjectToolsInventoryInput,

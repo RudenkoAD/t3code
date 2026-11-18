@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Fff from "@ff-labs/fff-node";
 import { it, afterEach, describe, expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -108,7 +109,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
           const vcsProcess = yield* VcsProcess.VcsProcess;
           const runVcs = vi.spyOn(vcsProcess, "run");
-          const createFinder = vi.spyOn(FileFinder, "create");
+          const createFinder = vi.spyOn(Fff.FileFinder, "create");
 
           const listed = yield* workspaceEntries.list({ cwd, directoryPath: "nested" });
           const ignored = yield* workspaceEntries.listIgnoredFiles({ cwd });

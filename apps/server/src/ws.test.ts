@@ -1710,6 +1710,7 @@ it.effect("a git action that fails partway still refreshes the repository status
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
+          { start: () => Effect.die("unused"), stop: () => Effect.void },
         ).pipe(
           Layer.provide(services),
           Layer.merge(RpcAuthorization.layer([AuthSourceControlWriteScope])),
@@ -2203,6 +2204,7 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
+          { start: () => Effect.die("unused"), stop: () => Effect.void },
         ).pipe(
           Layer.provide(services),
           Layer.merge(

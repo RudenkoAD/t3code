@@ -12,8 +12,8 @@
     "typecheck": "effect-tsgo tsrs --noEmit"
   },
   "dependencies": {
-    "@t3tools/source-control-azure-devops": "workspace:*",
     "@t3tools/source-control-arcanum": "workspace:*",
+    "@t3tools/source-control-azure-devops": "workspace:*",
     "@t3tools/source-control-bitbucket": "workspace:*",
     "@t3tools/source-control-core": "workspace:*",
     "@t3tools/source-control-cursor-origin": "workspace:*",

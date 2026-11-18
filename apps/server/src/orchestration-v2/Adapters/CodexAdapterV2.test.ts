@@ -6049,7 +6049,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           Effect.provide(
             ProviderReplayHarness.layerWithRegistry(
               { name: "codex-background-stop-untracked", runtimePolicyOverride: { cwd } },
-CodexAdapterV2Testkit.layer({
+              CodexAdapterV2Testkit.layer({
                 transcript: withConfigReads(localTranscript),
                 additionalInstanceIds: [ProviderInstanceId.make("t3profile_personal_codex")],
               }),

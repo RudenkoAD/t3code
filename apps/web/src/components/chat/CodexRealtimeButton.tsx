@@ -39,6 +39,131 @@ function waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
   });
 }
 
+type RealtimeFailureCause = Parameters<typeof squashAtomCommandFailure>[0]["cause"];
+type StartResult =
+  | { readonly _tag: "Failure"; readonly cause: RealtimeFailureCause }
+  | { readonly _tag: "Success"; readonly value: { readonly answer?: string | null } };
+type StopResult =
+  | { readonly _tag: "Failure"; readonly cause: RealtimeFailureCause }
+  | { readonly _tag: "Success"; readonly value: void };
+
+async function startVoiceSession(input: {
+  generation: number;
+  microphoneId: string | null | undefined;
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  sessionRef: { current: Session | null };
+  audioRef: { current: HTMLAudioElement | null };
+  mountedRef: { current: boolean };
+  startGenerationRef: { current: number };
+  startRemote: (request: {
+    environmentId: EnvironmentId;
+    input: { threadId: ThreadId; callId: string; offer: string };
+  }) => Promise<StartResult>;
+  stopRemote: (request: {
+    environmentId: EnvironmentId;
+    input: { threadId: ThreadId; callId: string };
+  }) => Promise<StopResult>;
+  closeSession: (notifyServer: boolean) => Promise<void>;
+  setActive: (active: boolean) => void;
+  setBusy: (busy: boolean) => void;
+  setError: (error: string | null) => void;
+}) {
+  let stream: MediaStream | undefined;
+  let peer: RTCPeerConnection | undefined;
+  let remoteStartRequested = false;
+  const sessionId = Array.from(SecureRandom.randomBytesUnsafe(16), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  try {
+    if (!navigator.mediaDevices?.getUserMedia || !globalThis.RTCPeerConnection) {
+      throw new Error("Live voice requires microphone access and WebRTC. Use HTTPS or localhost.");
+    }
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: input.microphoneId ? { deviceId: { exact: input.microphoneId } } : true,
+    });
+    if (
+      input.generation !== input.startGenerationRef.current ||
+      !input.mountedRef.current ||
+      !input.audioRef.current?.isConnected
+    ) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    peer = new RTCPeerConnection();
+    for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
+    peer.createDataChannel("oai-events");
+    const session: Session = {
+      id: sessionId,
+      environmentId: input.environmentId,
+      threadId: input.threadId,
+      serverRequested: false,
+      peer,
+      stream,
+    };
+    input.sessionRef.current = session;
+    peer.ontrack = (event) => {
+      if (input.audioRef.current) {
+        input.audioRef.current.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+        void input.audioRef.current
+          .play()
+          .catch(() => input.setError("Could not play Codex audio."));
+      }
+    };
+    peer.onconnectionstatechange = () => {
+      if (peer?.connectionState === "failed" || peer?.connectionState === "disconnected") {
+        input.setError("Live voice disconnected.");
+        void input.closeSession(true);
+      }
+    };
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    await waitForIceGathering(peer);
+    if (input.generation !== input.startGenerationRef.current) return;
+    const localOfferSdp = peer.localDescription?.sdp;
+    if (!localOfferSdp) throw new Error("Could not create a WebRTC offer.");
+    remoteStartRequested = true;
+    session.serverRequested = true;
+    const result = await input.startRemote({
+      environmentId: input.environmentId,
+      input: { threadId: input.threadId, callId: sessionId, offer: localOfferSdp },
+    });
+    if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+    if (
+      input.sessionRef.current !== session ||
+      input.generation !== input.startGenerationRef.current
+    ) {
+      const stopResult = await input.stopRemote({
+        environmentId: input.environmentId,
+        input: { threadId: input.threadId, callId: sessionId },
+      });
+      if (stopResult._tag === "Failure") squashAtomCommandFailure(stopResult);
+      return;
+    }
+    const answer = result.value;
+    if (!answer?.answer) throw new Error("Codex did not return a realtime answer.");
+    await peer.setRemoteDescription({ type: "answer", sdp: answer.answer });
+    if (input.sessionRef.current !== session) return;
+    input.setActive(true);
+  } catch (cause) {
+    if (input.sessionRef.current?.id === sessionId) input.sessionRef.current = null;
+    peer?.close();
+    stream?.getTracks().forEach((track) => track.stop());
+    if (remoteStartRequested) {
+      const result = await input.stopRemote({
+        environmentId: input.environmentId,
+        input: { threadId: input.threadId, callId: sessionId },
+      });
+      if (result._tag === "Failure") squashAtomCommandFailure(result);
+    }
+    if (input.generation !== input.startGenerationRef.current || !input.mountedRef.current) return;
+    input.setError(errorMessage(cause));
+  } finally {
+    if (input.generation === input.startGenerationRef.current && input.mountedRef.current)
+      input.setBusy(false);
+  }
+}
+
 interface VoiceButtonProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
@@ -110,100 +235,27 @@ function VoiceCallControl(props: VoiceButtonProps) {
     };
   }, []);
 
-  const start = async () => {
+  const start = () => {
     if (busy || active || props.disabled) return;
     const generation = ++startGenerationRef.current;
     setBusy(true);
     setError(null);
-    let stream: MediaStream | undefined;
-    let peer: RTCPeerConnection | undefined;
-    let remoteStartRequested = false;
-    const sessionId = Array.from(SecureRandom.randomBytesUnsafe(16), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
-    try {
-      if (!navigator.mediaDevices?.getUserMedia || !globalThis.RTCPeerConnection) {
-        throw new Error(
-          "Live voice requires microphone access and WebRTC. Use HTTPS or localhost.",
-        );
-      }
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: microphoneId ? { deviceId: { exact: microphoneId } } : true,
-      });
-      if (
-        generation !== startGenerationRef.current ||
-        !mountedRef.current ||
-        !audioRef.current?.isConnected
-      ) {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      peer = new RTCPeerConnection();
-      for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
-      peer.createDataChannel("oai-events");
-      const session: Session = {
-        id: sessionId,
-        environmentId: props.environmentId,
-        threadId: props.threadId,
-        serverRequested: false,
-        peer,
-        stream,
-      };
-      sessionRef.current = session;
-      peer.ontrack = (event) => {
-        if (audioRef.current) {
-          audioRef.current.srcObject = event.streams[0] ?? new MediaStream([event.track]);
-          void audioRef.current.play().catch(() => setError("Could not play Codex audio."));
-        }
-      };
-      peer.onconnectionstatechange = () => {
-        if (peer?.connectionState === "failed" || peer?.connectionState === "disconnected") {
-          setError("Live voice disconnected.");
-          void closeSession(true);
-        }
-      };
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      await waitForIceGathering(peer);
-      if (generation !== startGenerationRef.current) return;
-      const localOfferSdp = peer.localDescription?.sdp;
-      if (!localOfferSdp) throw new Error("Could not create a WebRTC offer.");
-      remoteStartRequested = true;
-      session.serverRequested = true;
-      const result = await startRemote({
-        environmentId: props.environmentId,
-        input: { threadId: props.threadId, callId: sessionId, offer: localOfferSdp },
-      });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-      if (sessionRef.current !== session || generation !== startGenerationRef.current) {
-        const stopResult = await stopRemote({
-          environmentId: props.environmentId,
-          input: { threadId: props.threadId, callId: sessionId },
-        });
-        if (stopResult._tag === "Failure") squashAtomCommandFailure(stopResult);
-        return;
-      }
-      const answer = result.value;
-      if (!answer?.answer) throw new Error("Codex did not return a realtime answer.");
-      await peer.setRemoteDescription({ type: "answer", sdp: answer.answer });
-      if (sessionRef.current !== session) return;
-      setActive(true);
-    } catch (cause) {
-      if (sessionRef.current?.id === sessionId) sessionRef.current = null;
-      peer?.close();
-      stream?.getTracks().forEach((track) => track.stop());
-      if (remoteStartRequested) {
-        const result = await stopRemote({
-          environmentId: props.environmentId,
-          input: { threadId: props.threadId, callId: sessionId },
-        });
-        if (result._tag === "Failure") squashAtomCommandFailure(result);
-      }
-      if (generation !== startGenerationRef.current || !mountedRef.current) return;
-      setError(errorMessage(cause));
-    } finally {
-      if (generation === startGenerationRef.current && mountedRef.current) setBusy(false);
-    }
+    void startVoiceSession({
+      generation,
+      microphoneId,
+      environmentId: props.environmentId,
+      threadId: props.threadId,
+      sessionRef,
+      audioRef,
+      mountedRef,
+      startGenerationRef,
+      startRemote,
+      stopRemote,
+      closeSession,
+      setActive,
+      setBusy,
+      setError,
+    });
   };
 
   const toggleMute = () => {
