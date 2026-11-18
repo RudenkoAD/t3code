@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as Electron from "electron";
 import { vi } from "vite-plus/test";
@@ -18,6 +19,7 @@ import * as DesktopApplicationMenu from "./DesktopApplicationMenu.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
+import * as LocalForkUpdates from "../updates/LocalForkUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
 const environmentInput = {
@@ -63,20 +65,30 @@ const layerElectronDialog = Layer.succeed(ElectronDialog.ElectronDialog, {
   showErrorBox: () => Effect.void,
 } satisfies ElectronDialog.ElectronDialog["Service"]);
 
-const layerDesktopUpdates = Layer.succeed(DesktopUpdates.DesktopUpdates, {
-  getState: Effect.die("unexpected getState"),
-  isActionActive: Effect.succeed(false),
-  isInstallActive: Effect.succeed(false),
-  subscribe: Effect.die("unexpected subscribe"),
-  emitState: Effect.void,
-  disabledReason: Effect.succeedNone,
-  configure: Effect.void,
-  setChannel: () => Effect.die("unexpected setChannel"),
-  check: () => Effect.die("unexpected check"),
-  download: Effect.die("unexpected download"),
-  install: Effect.die("unexpected install"),
-  installPrepared: () => Effect.die("unexpected installPrepared"),
-} satisfies DesktopUpdates.DesktopUpdates["Service"]);
+const layerDesktopUpdates = (disabledReason: Option.Option<string> = Option.none()) =>
+  Layer.succeed(DesktopUpdates.DesktopUpdates, {
+    getState: Effect.die("unexpected getState"),
+    isActionActive: Effect.succeed(false),
+    isInstallActive: Effect.succeed(false),
+    subscribe: Effect.die("unexpected subscribe"),
+    emitState: Effect.void,
+    disabledReason: Effect.succeed(disabledReason),
+    configure: Effect.void,
+    setChannel: () => Effect.die("unexpected setChannel"),
+    check: () => Effect.die("unexpected check"),
+    download: Effect.die("unexpected download"),
+    install: Effect.die("unexpected install"),
+    installPrepared: () => Effect.die("unexpected installPrepared"),
+  } satisfies DesktopUpdates.DesktopUpdates["Service"]);
+
+const layerLocalForkUpdates = (
+  check: LocalForkUpdates.LocalForkUpdates["Service"]["check"] = () =>
+    Effect.die("unexpected local fork update check"),
+) =>
+  Layer.succeed(LocalForkUpdates.LocalForkUpdates, {
+    check,
+    download: () => Effect.die("unexpected local fork update download"),
+  } satisfies LocalForkUpdates.LocalForkUpdates["Service"]);
 
 const layerDesktopWindow = (selectedAction: Deferred.Deferred<string>) =>
   Layer.succeed(DesktopWindow.DesktopWindow, {
@@ -113,6 +125,8 @@ const configureMenu = (
   selectedAction: Deferred.Deferred<string>,
   applicationMenuTemplate: Deferred.Deferred<readonly Electron.MenuItemConstructorOptions[]>,
   environment: Partial<DesktopEnvironment.MakeDesktopEnvironmentInput> = {},
+  updatesLayer = layerDesktopUpdates(),
+  localForkUpdatesLayer = layerLocalForkUpdates(),
 ) =>
   Effect.gen(function* () {
     const menu = yield* DesktopApplicationMenu.DesktopApplicationMenu;
@@ -122,7 +136,8 @@ const configureMenu = (
       DesktopApplicationMenu.layer.pipe(
         Layer.provideMerge(layerElectronMenu(applicationMenuTemplate)),
         Layer.provideMerge(layerDesktopWindow(selectedAction)),
-        Layer.provideMerge(layerDesktopUpdates),
+        Layer.provideMerge(updatesLayer),
+        Layer.provideMerge(localForkUpdatesLayer),
         Layer.provideMerge(layerElectronDialog),
         Layer.provideMerge(layerElectronApp),
         Layer.provideMerge(
@@ -135,6 +150,43 @@ const configureMenu = (
   );
 
 describe("DesktopApplicationMenu", () => {
+  it.effect("routes packaged macOS local fork updates through the injected fork service", () =>
+    Effect.gen(function* () {
+      const selectedAction = yield* Deferred.make<string>();
+      const applicationMenuTemplate =
+        yield* Deferred.make<readonly Electron.MenuItemConstructorOptions[]>();
+      const checked = yield* Deferred.make<void>();
+      const localForkUpdatesLayer = layerLocalForkUpdates(() =>
+        Deferred.succeed(checked, undefined).pipe(
+          Effect.as({ status: "up-to-date", currentVersion: "1.2.3", latestVersion: "1.2.3" }),
+        ),
+      );
+
+      yield* configureMenu(
+        selectedAction,
+        applicationMenuTemplate,
+        { platform: "darwin", isPackaged: true, appVersion: "1.2.3-local-fork" },
+        layerDesktopUpdates(
+          Option.some("Automatic updates are not available because no update feed is configured."),
+        ),
+        localForkUpdatesLayer,
+      );
+
+      const template = yield* Deferred.await(applicationMenuTemplate);
+      const appMenu = template.find((item) => item.label === "T3 Code (Fork)");
+      if (!Array.isArray(appMenu?.submenu)) {
+        throw new Error("Expected the macOS app menu submenu.");
+      }
+      const checkForUpdates = appMenu.submenu.find((item) => item.label === "Check for Updates...");
+      if (typeof checkForUpdates?.click !== "function") {
+        throw new Error("Expected a Check for Updates menu action.");
+      }
+
+      checkForUpdates.click({} as Electron.MenuItem, undefined, {} as KeyboardEvent);
+      yield* Deferred.await(checked);
+    }),
+  );
+
   it.effect("leaves the accelerator to Chromium instead of injecting a paste", () =>
     Effect.gen(function* () {
       const selectedAction = yield* Deferred.make<string>();

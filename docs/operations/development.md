@@ -286,6 +286,15 @@ DMGs default to the host architecture. Use `--arch` to choose another target and
 to retain packaging files for inspection. Run `vp run dist:desktop:artifact --help` for other
 options.
 
+### Publish a macOS local fork update
+
+Build the ARM64 DMG with `vp run dist:desktop:dmg:fork`. The version in that
+script must be higher than the previous fork release. Publish the DMG to
+`RudenkoAD/t3code` under the tag `local-fork-v<version>` and mark the release as
+the latest stable release. Keep the generated asset name
+`T3-Code-<version>-local-fork-arm64.dmg`. The macOS app checks that release
+and verifies the download against the size and SHA-256 digest reported by GitHub.
+
 ### Prepared server bytecode
 
 Native macOS and Windows desktop artifact builds, and native Linux x64 and ARM64 builds, generate server

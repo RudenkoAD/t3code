@@ -42,6 +42,7 @@ import * as DesktopConnectionCatalogStore from "./app/DesktopConnectionCatalogSt
 import * as DesktopClerk from "./app/DesktopClerk.ts";
 import * as DesktopCliCommand from "./app/DesktopCliCommand.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
+import * as LocalForkUpdates from "./updates/LocalForkUpdates.ts";
 import * as DesktopAssets from "./app/DesktopAssets.ts";
 import * as DesktopPrimaryPaste from "./app/DesktopPrimaryPaste.ts";
 import * as DesktopBackendConfiguration from "./backend/DesktopBackendConfiguration.ts";
@@ -240,6 +241,7 @@ const layerDesktopClerk = DesktopClerk.layer.pipe(
 
 const layerDesktopApplicationRuntime = layerDesktopApplication.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  Layer.provideMerge(LocalForkUpdates.layer),
   Layer.provideMerge(NodeHttpClient.layerUndici),
   Layer.provideMerge(NetService.layer),
   Layer.provideMerge(layerElectron),

@@ -11,7 +11,9 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
+import * as LocalForkUpdates from "../updates/LocalForkUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
+import { isDesktopLocalForkVersion } from "../updates/updateChannels.ts";
 
 export class DesktopApplicationMenuActionError extends Schema.TaggedError<DesktopApplicationMenuActionError>()(
   "DesktopApplicationMenuActionError",
@@ -33,7 +35,9 @@ export class DesktopApplicationMenu extends Context.Service<
 >()("@t3tools/desktop/window/DesktopApplicationMenu") {}
 
 type DesktopApplicationMenuRuntimeServices =
+  | DesktopEnvironment.DesktopEnvironment
   | DesktopUpdates.DesktopUpdates
+  | LocalForkUpdates.LocalForkUpdates
   | DesktopWindow.DesktopWindow
   | ElectronDialog.ElectronDialog;
 
@@ -88,7 +92,98 @@ const checkForUpdatesFromMenu = Effect.gen(function* () {
   }
 }).pipe(Effect.withSpan("desktop.menu.checkForUpdates"));
 
+const checkForLocalForkUpdatesFromMenu = Effect.gen(function* () {
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const forkUpdates = yield* LocalForkUpdates.LocalForkUpdates;
+  const electronDialog = yield* ElectronDialog.ElectronDialog;
+  const result = yield* forkUpdates.check({
+    currentVersion: environment.appVersion,
+    architecture: environment.runtimeInfo.appArch,
+  });
+
+  if (result.status === "error") {
+    yield* electronDialog.showMessageBox({
+      type: "warning",
+      title: "Update check failed",
+      message: "Could not check updates for this local fork.",
+      detail: result.message,
+      buttons: ["OK"],
+    });
+    return;
+  }
+  if (result.status === "up-to-date") {
+    yield* electronDialog.showMessageBox({
+      type: "info",
+      title: "You're up to date!",
+      message: `Local fork ${result.currentVersion} is the newest version available.`,
+      buttons: ["OK"],
+    });
+    return;
+  }
+
+  const choice = yield* electronDialog.showMessageBox({
+    type: "info",
+    title: "Local fork update available",
+    message: `T3 Code ${result.version} is available for macOS ${environment.runtimeInfo.appArch}.`,
+    detail: `${result.assetName}\n\nDownload the original DMG from RudenkoAD/t3code?`,
+    buttons: ["Download DMG", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (choice.response !== 0) return;
+
+  const download = yield* forkUpdates.download(result);
+  if (download.status === "cancelled") return;
+  if (download.status === "error") {
+    yield* electronDialog.showMessageBox({
+      type: "warning",
+      title: "Download failed",
+      message: "Could not download the local fork DMG.",
+      detail: download.message,
+      buttons: ["OK"],
+    });
+    return;
+  }
+  yield* electronDialog.showMessageBox({
+    type: "info",
+    title: "DMG downloaded",
+    message: `T3 Code ${result.version} was downloaded and revealed in Finder.`,
+    detail:
+      "Quit T3 Code, open the DMG, and drag the app to Applications to replace your current copy.",
+    buttons: ["OK"],
+  });
+}).pipe(Effect.withSpan("desktop.menu.checkForLocalForkUpdates"));
+
 const handleCheckForUpdatesMenuClick = Effect.gen(function* () {
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  if (
+    environment.platform === "darwin" &&
+    environment.isPackaged &&
+    isDesktopLocalForkVersion(environment.appVersion)
+  ) {
+    const updates = yield* DesktopUpdates.DesktopUpdates;
+    const disabledReason = yield* updates.disabledReason;
+    if (
+      Option.isSome(disabledReason) &&
+      disabledReason.value !==
+        "Automatic updates are not available because no update feed is configured."
+    ) {
+      const electronDialog = yield* ElectronDialog.ElectronDialog;
+      yield* electronDialog.showMessageBox({
+        type: "info",
+        title: "Updates unavailable",
+        message: "Automatic updates are not available right now.",
+        detail: disabledReason.value,
+        buttons: ["OK"],
+      });
+      return;
+    }
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* desktopWindow.activate;
+    yield* checkForLocalForkUpdatesFromMenu;
+    return;
+  }
+
   const updates = yield* DesktopUpdates.DesktopUpdates;
   const electronDialog = yield* ElectronDialog.ElectronDialog;
   const disabledReason = yield* updates.disabledReason;

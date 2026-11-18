@@ -83,6 +83,10 @@ or use a package manager:
 | Arch Linux nightly | `yay -S t3code-nightly-bin`                                  |
 | Nix                | `nix profile add github:NixOS/nixpkgs/nixos-unstable#t3code` |
 
+Local fork builds can check for updates from **Check for Updates** in the app
+menu. Download the offered DMG, quit T3 Code, then open the DMG and drag the app
+to Applications to replace the current copy.
+
 ### Linux
 
 AppImage and `.deb` downloads are available for x86_64 and ARM64. Check your
