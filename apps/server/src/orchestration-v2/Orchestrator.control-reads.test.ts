@@ -2154,7 +2154,7 @@ it.effect("a user message dispatched first stays run 1 when its lineage read is 
   let gateArmed = false;
   const layerGatedLineageRead = ProviderReplayHarness.layerWithRegistry(
     { name: "dispatch-order" },
-    ProviderAdapterRegistry.layerFromAdapters([adapter]),
+    ProviderAdapterRegistry.layerFromAdapters([adapter, personalAdapter]),
     {
       runEffectWorker: false,
       wrapProjectionStore: (store) => ({

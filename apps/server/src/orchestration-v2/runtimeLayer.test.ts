@@ -114,6 +114,10 @@ const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
   model: "gpt-5.4",
 } satisfies ModelSelection;
+const personalCodexModelSelection = {
+  ...modelSelection,
+  instanceId: ProviderInstanceId.make("t3profile_personal_codex"),
+} satisfies ModelSelection;
 const alternateInstanceId = ProviderInstanceId.make("codex_alternate");
 
 const layerVcsDriverRegistryTest = VcsDriverRegistry.layer.pipe(
@@ -154,6 +158,15 @@ const providerInstance = {
   orchestrationAdapter,
   textGeneration: {} as ProviderInstance["textGeneration"],
 } satisfies ProviderInstance;
+const personalCodexInstanceId = ProviderInstanceId.make("t3profile_personal_codex");
+const personalCodexProviderInstance = {
+  ...providerInstance,
+  instanceId: personalCodexInstanceId,
+  orchestrationAdapter: {
+    ...orchestrationAdapter,
+    instanceId: personalCodexInstanceId,
+  },
+} satisfies ProviderInstance;
 const alternateProviderInstance = {
   ...providerInstance,
   instanceId: alternateInstanceId,
@@ -181,20 +194,34 @@ const claudeProviderInstance = {
     driver: claudeDriver,
   },
 } satisfies ProviderInstance;
+const personalClaudeInstanceId = ProviderInstanceId.make("t3profile_personal_claudeAgent");
+const personalClaudeProviderInstance = {
+  ...claudeProviderInstance,
+  instanceId: personalClaudeInstanceId,
+  orchestrationAdapter: {
+    ...claudeProviderInstance.orchestrationAdapter,
+    instanceId: personalClaudeInstanceId,
+  },
+} satisfies ProviderInstance;
 
 const layerTestProviderInstanceRegistry = Layer.succeed(
   ProviderInstanceRegistry.ProviderInstanceRegistry,
   {
     getInstance: (instanceId) =>
       Effect.succeed(
-        [providerInstance, alternateProviderInstance, claudeProviderInstance].find(
-          (instance) => instanceId === instance.instanceId,
-        ),
+        [
+          providerInstance,
+          personalCodexProviderInstance,
+          alternateProviderInstance,
+          claudeProviderInstance,
+          personalClaudeProviderInstance,
+        ].find((instance) => instanceId === instance.instanceId),
       ),
     listInstances: Effect.succeed([
       providerInstance,
       alternateProviderInstance,
       claudeProviderInstance,
+      personalClaudeProviderInstance,
     ]),
     listUnavailable: Effect.succeed([]),
     streamChanges: Stream.empty,
@@ -7304,7 +7331,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       const eventSink = yield* EventSink.EventSinkV2;
       const threadId = ThreadId.make("runtime-layer-queue-provider-limit");
       const queuedSelection = {
-        instanceId: alternateInstanceId,
+        instanceId: personalClaudeInstanceId,
         model: "gpt-5.5",
         options: [{ id: "reasoningEffort", value: "high" }],
       };
@@ -7469,7 +7496,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const eventSink = yield* EventSink.EventSinkV2;
         const threadId = ThreadId.make(`runtime-layer-queue-limit-switch-${release}`);
-        const switchedSelection = { instanceId: alternateInstanceId, model: "gpt-5.5" };
+        const switchedSelection = { instanceId: personalClaudeInstanceId, model: "gpt-5.5" };
         yield* orchestrator.dispatch({
           type: "thread.create",
           commandId: CommandId.make(`${threadId}:create`),
@@ -7592,13 +7619,13 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         const reset = yield* orchestrator.getThreadProjection(threadId);
         const resumed = reset.runs.find((run) => run.id === queued.id);
         assert.equal(resumed?.status, "starting");
-        assert.deepEqual(resumed?.modelSelection, modelSelection);
+        assert.deepEqual(resumed?.modelSelection, personalCodexModelSelection);
       }),
   );
 
   it.effect.each([
-    ["server", modelSelection],
-    ["provider", modelSelection],
+    ["server", personalCodexModelSelection],
+    ["provider", personalCodexModelSelection],
   ] as const)(
     "delivers a queued monitor update from %s after conversation selection %j",
     ([creationSource, currentSelection]) =>
@@ -7685,12 +7712,12 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         const after = yield* orchestrator.getThreadProjection(threadId);
         const delivered = after.runs.find((run) => run.id === queued.id)!;
         assert.equal(delivered.status, "starting");
-        assert.deepEqual(delivered.modelSelection, modelSelection);
-        assert.equal(delivered.providerInstanceId, modelSelection.instanceId);
+        assert.deepEqual(delivered.modelSelection, personalCodexModelSelection);
+        assert.equal(delivered.providerInstanceId, personalCodexModelSelection.instanceId);
         assert.equal(
           after.attempts.find((attempt) => attempt.id === delivered.activeAttemptId)
             ?.providerInstanceId,
-          modelSelection.instanceId,
+          personalCodexModelSelection.instanceId,
         );
         assert.equal(delivered.providerThreadId, expectedThreadId);
         assert.equal(after.thread.activeProviderThreadId, expectedThreadId);
@@ -7710,7 +7737,11 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
   );
 
   it.effect.each([
-    { ...modelSelection, model: "gpt-5.5", options: [{ id: "reasoningEffort", value: "high" }] },
+    {
+      ...personalCodexModelSelection,
+      model: "gpt-5.5",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    },
   ])(
     "starts a queued delegated completion on a selection set while it waited: %j",
     (newerSelection) =>
@@ -7823,7 +7854,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
       const threadId = ThreadId.make("runtime-layer-queued-agent-message-model-pick");
-      const pickedSelection = { ...modelSelection, model: "gpt-5.5" };
+      const pickedSelection = { ...personalCodexModelSelection, model: "gpt-5.5" };
       yield* orchestrator.dispatch({
         type: "thread.create",
         commandId: CommandId.make(`${threadId}:create`),
@@ -7920,7 +7951,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       });
       for (const [key, selection] of [
         ["active", modelSelection],
-        ["picked", { ...modelSelection, instanceId: alternateInstanceId }],
+        ["picked", { ...modelSelection, instanceId: personalClaudeInstanceId }],
       ] as const) {
         yield* orchestrator.dispatch({
           type: "message.dispatch",
@@ -7958,7 +7989,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       const wake = projection.runs.find(
         (run) => run.userMessageId === MessageId.make(`${threadId}:wake`),
       );
-      assert.deepEqual(wake?.modelSelection, modelSelection);
+      assert.deepEqual(wake?.modelSelection, personalCodexModelSelection);
       assert.equal(wake?.providerThreadId, active?.providerThreadId);
     }),
   );
@@ -7967,7 +7998,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const threadId = ThreadId.make("runtime-layer-goal-pause-behind-queued-pick");
-      const claudeSelection = { ...modelSelection, instanceId: claudeInstanceId };
+      const claudeSelection = { ...modelSelection, instanceId: personalClaudeInstanceId };
       yield* orchestrator.dispatch({
         type: "thread.create",
         commandId: CommandId.make(`${threadId}:create`),
@@ -8028,7 +8059,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       const pause = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
         (run) => run.userMessageId === MessageId.make(`${threadId}:pause`),
       );
-      assert.deepEqual(pause?.modelSelection, modelSelection);
+      assert.deepEqual(pause?.modelSelection, personalCodexModelSelection);
     }),
   );
 
@@ -10705,16 +10736,9 @@ const layerQueueResumeDisabledInstanceTest = Layer.mergeAll(
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
-  Layer.provide(
+  Layer.provideMerge(
     ServerSettings.layerTest({
-      providerInstances: {
-        [alternateInstanceId]: { driver: "codex", enabled: true },
-      },
-      projectSettingsOverrides: {
-        [queueResumeDisabledInstanceProjectId]: {
-          providerInstances: { [alternateInstanceId]: { enabled: false } },
-        },
-      },
+      profileProviderSettings: { personal: { codexEnabled: true } },
     }),
   ),
   Layer.provide(layerTestProviderInstanceRegistry),
@@ -10732,9 +10756,10 @@ it.layer(layerQueueResumeDisabledInstanceTest)(
         Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const events = yield* EventSink.EventSinkV2;
+          const settings = yield* ServerSettings.ServerSettingsService;
           const threadId = ThreadId.make("queue-resume-disabled-instance-thread");
           const queuedModelSelection = {
-            instanceId: alternateInstanceId,
+            instanceId: personalCodexModelSelection.instanceId,
             model: "gpt-5.5",
           } satisfies ModelSelection;
 
@@ -10774,6 +10799,9 @@ it.layer(layerQueueResumeDisabledInstanceTest)(
             attachments: [],
             modelSelection: queuedModelSelection,
             dispatchMode: { type: "queue_after_active" },
+          });
+          yield* settings.updateSettings({
+            profileProviderSettings: { personal: { codexEnabled: false } },
           });
 
           const before = yield* orchestrator.getThreadProjection(threadId);

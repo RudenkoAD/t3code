@@ -4407,7 +4407,7 @@ it.effect.each([
         assert.isDefined(turnEvents);
         for (const [index, effort] of ["medium", "high", "medium"].entries()) {
           const selection = {
-            ...modelSelection,
+            ...scopedSelection,
             options: [{ id: "reasoningEffort", value: effort }],
           } satisfies ModelSelection;
           yield* secondRuntime.resumeThread({
