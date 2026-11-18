@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { ProjectProfile } from "./project.ts";
 
 import { IsoDateTime, NonNegativeInt, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
@@ -47,6 +48,7 @@ export const ProjectCloneListEvent = Schema.Array(ProjectCloneSnapshot);
 export type ProjectCloneListEvent = typeof ProjectCloneListEvent.Type;
 
 export const ProjectCloneStartInput = Schema.Struct({
+  profile: Schema.optionalKey(ProjectProfile),
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   createdAt: IsoDateTime,

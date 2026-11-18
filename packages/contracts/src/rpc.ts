@@ -33,10 +33,28 @@ import {
   ChatGptHandoffInput,
   ChatGptHandoffState,
 } from "./providerSetup.ts";
+import {
+  CodexRealtimeError,
+  CodexRealtimeStartInput,
+  CodexRealtimeStartResult,
+  CodexRealtimeStopInput,
+} from "./codexRealtime.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
+import { ArcActionProgressEvent, ArcRunActionInput, ArcWorkflowError } from "./arc.ts";
+import {
+  ProfileMcpInventoryInput,
+  ProfileMcpInventoryResult,
+  ProfileMcpServerToggleError,
+  ProfileSetMcpServerEnabledInput,
+} from "./profileMcpInventory.ts";
+import {
+  ProjectToolsInventoryError,
+  ProjectToolsInventoryInput,
+  ProjectToolsInventoryResult,
+} from "./projectToolsInventory.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ProviderAuthCancelInput,
@@ -456,6 +474,8 @@ export const WS_METHODS = {
   providerInstallCancel: "provider.install.cancel",
   providerInstallSubscribe: "provider.install.subscribe",
   providerInstallRemove: "provider.install.remove",
+  codexRealtimeStart: "codex.realtime.start",
+  codexRealtimeStop: "codex.realtime.stop",
 
   vcsPull: "vcs.pull",
   vcsRefreshStatus: "vcs.refreshStatus",
@@ -467,6 +487,7 @@ export const WS_METHODS = {
   vcsInit: "vcs.init",
 
   gitRunStackedAction: "git.runStackedAction",
+  arcRunAction: "arc.runAction",
   gitResolvePullRequest: "git.resolvePullRequest",
   gitPreparePullRequestThread: "git.preparePullRequestThread",
 
@@ -505,6 +526,9 @@ export const WS_METHODS = {
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
+  profileMcpInventory: "profile.mcpInventory",
+  profileSetMcpServerEnabled: "profile.setMcpServerEnabled",
+  projectToolsInventory: "project.toolsInventory",
   serverGetNpmRelease: "server.getNpmRelease",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
@@ -650,6 +674,24 @@ const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
   error: Schema.Union([KeybindingsConfigError, ServerSettingsError, EnvironmentAuthorizationError]),
 });
 
+const WsProfileMcpInventoryRpc = Rpc.make(WS_METHODS.profileMcpInventory, {
+  payload: ProfileMcpInventoryInput,
+  success: ProfileMcpInventoryResult,
+  error: EnvironmentAuthorizationError,
+});
+
+const WsProfileSetMcpServerEnabledRpc = Rpc.make(WS_METHODS.profileSetMcpServerEnabled, {
+  payload: ProfileSetMcpServerEnabledInput,
+  success: ProfileMcpInventoryResult,
+  error: Schema.Union([ProfileMcpServerToggleError, EnvironmentAuthorizationError]),
+});
+
+const WsProjectToolsInventoryRpc = Rpc.make(WS_METHODS.projectToolsInventory, {
+  payload: ProjectToolsInventoryInput,
+  success: ProjectToolsInventoryResult,
+  error: Schema.Union([ProjectToolsInventoryError, EnvironmentAuthorizationError]),
+});
+
 export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
   payload: Schema.Struct({
     instanceId: Schema.optional(ProviderInstanceId),
@@ -748,6 +790,17 @@ const WsProviderAuthRemoveMethodRpc = Rpc.make(WS_METHODS.providerAuthRemoveMeth
   payload: ProviderAuthRemoveMethodInput,
   success: ProviderAuthState,
   error: ProviderSetupRpcError,
+});
+
+const WsCodexRealtimeStartRpc = Rpc.make(WS_METHODS.codexRealtimeStart, {
+  payload: CodexRealtimeStartInput,
+  success: CodexRealtimeStartResult,
+  error: Schema.Union([CodexRealtimeError, EnvironmentAuthorizationError]),
+});
+
+const WsCodexRealtimeStopRpc = Rpc.make(WS_METHODS.codexRealtimeStop, {
+  payload: CodexRealtimeStopInput,
+  error: Schema.Union([CodexRealtimeError, EnvironmentAuthorizationError]),
 });
 
 const WsProviderAuthLogoutRpc = Rpc.make(WS_METHODS.providerAuthLogout, {
@@ -1544,6 +1597,13 @@ const WsGitRunStackedActionRpc = Rpc.make(WS_METHODS.gitRunStackedAction, {
   stream: true,
 });
 
+const WsArcRunActionRpc = Rpc.make(WS_METHODS.arcRunAction, {
+  payload: ArcRunActionInput,
+  success: ArcActionProgressEvent,
+  error: Schema.Union([ArcWorkflowError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsGitResolvePullRequestRpc = Rpc.make(WS_METHODS.gitResolvePullRequest, {
   payload: GitPullRequestRefInput,
   success: GitResolvePullRequestResult,
@@ -2085,6 +2145,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsGuestShareCreateRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
+  WsProfileMcpInventoryRpc,
+  WsProfileSetMcpServerEnabledRpc,
+  WsProjectToolsInventoryRpc,
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,
@@ -2096,6 +2159,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderAuthRespondRpc,
   WsProviderAuthCancelRpc,
   WsProviderAuthRemoveMethodRpc,
+  WsCodexRealtimeStartRpc,
+  WsCodexRealtimeStopRpc,
   WsProviderAuthLogoutRpc,
   WsProviderAuthSubscribeRpc,
   WsProviderInstallStartRpc,
@@ -2232,6 +2297,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,
+  WsArcRunActionRpc,
   WsGitResolvePullRequestRpc,
   WsGitPreparePullRequestThreadRpc,
   WsVcsListRefsRpc,

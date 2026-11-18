@@ -6,6 +6,12 @@ import type * as Effect from "effect/Effect";
  * lists only a core set plus `tool_search`, which lists the rest on demand.
  */
 export const MCP_TOOL_EXPOSURE_HEADER = "t3-tool-exposure";
+import * as Schema from "effect/Schema";
+
+export const NativeProjectToolPolicy = Schema.Struct({
+  deniedMcpServers: Schema.Array(Schema.String),
+  deniedSkills: Schema.Array(Schema.String),
+});
 
 export interface McpProviderSessionConfig {
   readonly environmentId: EnvironmentId;
@@ -17,6 +23,7 @@ export interface McpProviderSessionConfig {
   /** Omit preview_* instructions when the user withholds agent browser access. */
   readonly browserToolsAvailable: boolean;
   readonly capabilities?: ReadonlySet<string>;
+  readonly nativeToolPolicy?: typeof NativeProjectToolPolicy.Type | undefined;
   readonly agentDeviceEnvironment?: Readonly<Record<string, string>>;
   /** True while a delegated task this thread started will wake it with its result. */
   readonly hasPendingWake?: Effect.Effect<boolean>;

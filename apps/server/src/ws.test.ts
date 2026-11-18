@@ -1017,6 +1017,7 @@ it.effect.each([
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
             { secretReferences: true },
+            { start: () => Effect.die("unused"), stop: () => Effect.void },
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );
@@ -1265,6 +1266,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
+          { start: () => Effect.die("unused"), stop: () => Effect.void },
         ).pipe(Layer.provide(configRpcServices)),
       ),
     );
@@ -1627,6 +1629,7 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
+          { start: () => Effect.die("unused"), stop: () => Effect.void },
         ).pipe(Layer.provide(services)),
       ),
     );
@@ -1788,6 +1791,7 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
+          { start: () => Effect.die("unused"), stop: () => Effect.void },
         ).pipe(
           Layer.provide(services),
           Layer.merge(RpcAuthorization.layer([AuthSourceControlWriteScope])),

@@ -36,6 +36,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
+import { codexVoiceTurnId } from "./CodexVoiceTurn.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
@@ -1144,7 +1145,9 @@ export const layer: Layer.Layer<
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
       let recoveryTurnItem: OrchestrationV2TurnItem | undefined;
+      const voiceTurnId = codexVoiceTurnId(message);
       const loadedProviderThread = yield* Effect.gen(function* () {
+        if (voiceTurnId !== undefined) return providerThread;
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
             nativeForkTransfer.sourceThreadId,
@@ -1817,13 +1820,28 @@ export const layer: Layer.Layer<
         ),
       );
       const deliverySession =
-        effectiveHandoffs.length === 0 &&
-        retryHandoff.length === 0 &&
-        sideChatHandoff === undefined &&
-        restartNote === "" &&
-        !noteContinuation
-          ? session
-          : makeDeliverySession(session, startWithHandoffs);
+        voiceTurnId !== undefined
+          ? makeDeliverySession(
+              session,
+              (turnInput) =>
+                session.adoptVoiceTurn?.(turnInput, voiceTurnId) ??
+                Effect.fail(
+                  new ProviderAdapter.ProviderAdapterTurnStartError({
+                    driver: session.driver,
+                    threadId: turnInput.threadId,
+                    providerThreadId: providerThread.id,
+                    runId,
+                    cause: "This Codex voice session is no longer available.",
+                  }),
+                ),
+            )
+          : effectiveHandoffs.length === 0 &&
+              retryHandoff.length === 0 &&
+              sideChatHandoff === undefined &&
+              restartNote === "" &&
+              !noteContinuation
+            ? session
+            : makeDeliverySession(session, startWithHandoffs);
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,

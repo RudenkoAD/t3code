@@ -1,4 +1,4 @@
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { OrchestrationDispatchCommandError, resolveProjectProfile } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
@@ -23,6 +23,11 @@ import * as Stream from "effect/Stream";
 import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import {
+  readProfileMcpInventory,
+  setProfileMcpServerEnabled,
+} from "./provider/ProfileMcpInventory.ts";
+import { readProjectToolsInventory } from "./project/ProjectToolsInventory.ts";
+import {
   AcpRegistryOperationError,
   CommandId,
   authScopeResponse,
@@ -43,6 +48,8 @@ import {
   type OrchestrationV2Command,
   type GitActionProgressEvent,
   type GitManagerServiceError,
+  type ArcWorkflowError,
+  VcsUnsupportedOperationError,
   type MessageId,
   type AcpRegistryDeleteSessionInput,
   type AcpRegistryDisableProviderInput,
@@ -95,6 +102,12 @@ import {
   PersistChatAttachmentsError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  type ProjectId,
+  type ProviderDriverKind,
+  ProviderInstanceId,
+  ProjectToolsInventoryError,
+  type ProjectToolsInventoryInput,
+  profileProviderInstanceId,
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
@@ -119,6 +132,7 @@ import * as ThreadManagementService from "./orchestration-v2/ThreadManagementSer
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
+import * as CodexRealtimeService from "./orchestration-v2/CodexRealtimeService.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
@@ -210,6 +224,7 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import * as ArcWorkflowService from "./arc/ArcWorkflowService.ts";
 import { refreshPushedPullRequests } from "./git/refreshPushedPullRequests.ts";
 import { linkCreatedPullRequest } from "./git/linkCreatedPullRequest.ts";
 import * as ReviewService from "./review/ReviewService.ts";
@@ -1440,6 +1455,7 @@ export const layerWsRpc = (
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   reportProfiles: ServerBrowser.ProfileReporter,
   settingsClient: { readonly secretReferences: boolean },
+  codexRealtime: CodexRealtimeService.VoiceConnection,
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -1532,6 +1548,7 @@ export const layerWsRpc = (
       const remoteOpenTargets = yield* RemoteOpenTargets.RemoteOpenTargets;
       const directEndpoints = yield* DirectEndpoints.DirectEndpoints;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+      const arcWorkflow = yield* Effect.serviceOption(ArcWorkflowService.ArcWorkflowService);
       const review = yield* ReviewService.ReviewService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
@@ -1550,6 +1567,7 @@ export const layerWsRpc = (
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const npmRelease = yield* NpmRelease.NpmRelease;
       const config = yield* ServerConfig.ServerConfig;
+      const profileHomeDirectory = (yield* Path.Path).join(config.stateDir, "profiles");
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const storageCleanup = yield* StorageCleanup.StorageCleanup;
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
@@ -1849,6 +1867,7 @@ export const layerWsRpc = (
           auth,
           cwd: config.cwd,
           keybindingsConfigPath: config.keybindingsConfigPath,
+          profileHomeDirectory,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers,
@@ -2336,6 +2355,43 @@ export const layerWsRpc = (
             workspaceSnapshotsOnDemand: false,
             deferNetworkDiscovery: false,
           }),
+        [WS_METHODS.profileMcpInventory]: (input) =>
+          readProfileMcpInventory(input, profileHomeDirectory),
+        [WS_METHODS.projectToolsInventory]: Effect.fn("Project.toolsInventory")(function* (
+          input: ProjectToolsInventoryInput,
+        ) {
+          const [projectOption, settings] = yield* Effect.all(
+            [projectService.getById(input.projectId), serverSettings.getSettings],
+            { concurrency: "unbounded" },
+          ).pipe(
+            Effect.mapError(
+              () => new ProjectToolsInventoryError({ message: "Could not load project settings." }),
+            ),
+          );
+          if (Option.isNone(projectOption)) {
+            return yield* new ProjectToolsInventoryError({ message: "Project no longer exists." });
+          }
+          const profile = resolveProjectProfile(settings, input.projectId);
+          const providers = yield* providerRegistry.getProviders;
+          const codexProviderId = profileProviderInstanceId(
+            profile,
+            ProviderInstanceId.make("codex"),
+          );
+          const codexAuthStatus = providers.find(
+            (provider) => provider.instanceId === codexProviderId,
+          )?.auth.status;
+          return yield* readProjectToolsInventory({
+            projectId: input.projectId,
+            profile,
+            workspaceRoot: projectOption.value.workspaceRoot,
+            profileHomeDirectory,
+            settings,
+            providerInstanceRegistry: providerInstances,
+            codexAuthStatus,
+          });
+        }),
+        [WS_METHODS.profileSetMcpServerEnabled]: (input) =>
+          setProfileMcpServerEnabled(input, profileHomeDirectory),
         [WS_METHODS.serverSearchAcpRegistry]: (input) =>
           acpRegistryCatalog
             .search(input)
@@ -2669,6 +2725,8 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(peerLinkRequests.answer(input)),
           ),
+        [WS_METHODS.codexRealtimeStart]: codexRealtime.start,
+        [WS_METHODS.codexRealtimeStop]: codexRealtime.stop,
         [WS_METHODS.serverUpdateSettings]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* ({ patch, providerInstanceMutation }) {
@@ -2847,6 +2905,7 @@ export const layerWsRpc = (
               projectService
                 .create({
                   commandId: CommandId.make(`project-clone-create:${project.projectId}`),
+                  ...(input.profile === undefined ? {} : { profile: input.profile }),
                   projectId: project.projectId,
                   title: project.title,
                   workspaceRoot: project.workspaceRoot,
@@ -3162,6 +3221,32 @@ export const layerWsRpc = (
                 }),
               ),
           ),
+        [WS_METHODS.arcRunAction]: (input) =>
+          Option.isNone(arcWorkflow)
+            ? Stream.fail(
+                new VcsUnsupportedOperationError({
+                  operation: "arc.runAction",
+                  kind: "arc",
+                  detail: "Arc actions are unavailable in this server configuration.",
+                }),
+              )
+            : Stream.callback<GitActionProgressEvent, ArcWorkflowError>((queue) =>
+                arcWorkflow.value
+                  .runAction(input, {
+                    progressReporter: {
+                      publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
+                    },
+                  })
+                  .pipe(
+                    Effect.matchCauseEffect({
+                      onFailure: (cause) => Queue.failCause(queue, cause),
+                      onSuccess: () =>
+                        refreshGitStatus(input.cwd).pipe(
+                          Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
+                        ),
+                    }),
+                  ),
+              ),
         [WS_METHODS.gitResolvePullRequest]: (input) => gitWorkflow.resolvePullRequest(input),
         [WS_METHODS.gitPreparePullRequestThread]: (input) =>
           gitWorkflow
@@ -3539,6 +3624,7 @@ export const layer = Layer.unwrap(
         const clientAnalyticsProps = readClientAnalyticsProps(request);
         yield* analytics.recordOwners(readClientOwners(request), "client");
         const reportProfiles = yield* serverBrowser.profileReporter;
+        const codexRealtime = yield* (yield* CodexRealtimeService.CodexRealtimeService).connect;
         const rpcWebSocketHttpEffect = yield* Effect.gen(function* () {
           const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
           yield* RpcServer.make(ServerWsRpcGroup, WS_RPC_SERVER_OPTIONS).pipe(
@@ -3574,6 +3660,7 @@ export const layer = Layer.unwrap(
               serverBrowser,
               reportProfiles,
               readSettingsClient(url.value),
+              codexRealtime,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.
@@ -3640,6 +3727,7 @@ export const layer = Layer.unwrap(
           () => sessions.markDisconnected(session.sessionId),
         );
       }).pipe(
+        Effect.scoped,
         Effect.catchTags({
           EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
           EnvironmentInternalError: HttpServerRespondable.toResponse,

@@ -6,6 +6,7 @@ import {
   ThreadId,
   ProjectId,
   WS_METHODS,
+  type ArcRunActionInput,
   type GitActionProgressEvent,
   type GitRunStackedActionInput,
   type GitRunStackedActionResult,
@@ -445,18 +446,21 @@ describe("vcsActionState", () => {
         };
         const targetKey = { environmentId, cwd };
         const successfulActionId = "invalidate-success";
+        const arcActionId = "invalidate-arc-success";
         const failedActionId = "invalidate-failure";
         const interruptedActionId = "invalidate-interrupted";
         const successfulTransportActionId = createVcsActionTransportId(
           targetKey,
           successfulActionId,
         );
+        const arcTransportActionId = createVcsActionTransportId(targetKey, arcActionId);
         const failedTransportActionId = createVcsActionTransportId(targetKey, failedActionId);
         const interruptedTransportActionId = createVcsActionTransportId(
           targetKey,
           interruptedActionId,
         );
         const rpcInputs = new Array<GitRunStackedActionInput>();
+        const arcRpcInputs = new Array<ArcRunActionInput>();
         const client = {
           [WS_METHODS.gitRunStackedAction]: (input: GitRunStackedActionInput) =>
             (rpcInputs.push(input), input.actionId === successfulTransportActionId)
@@ -481,6 +485,18 @@ describe("vcsActionState", () => {
                       message: "push failed after creating the branch",
                     }),
                   ),
+          [WS_METHODS.arcRunAction]: (input: ArcRunActionInput) => (
+            arcRpcInputs.push(input),
+            Stream.make(
+              progress({
+                kind: "action_finished",
+                actionId: arcTransportActionId,
+                cwd,
+                action,
+                result,
+              }),
+            )
+          ),
         } as unknown as WsRpcProtocolClient;
         const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
           target,
@@ -541,6 +557,19 @@ describe("vcsActionState", () => {
           { actionId: successfulTransportActionId, cwd, action, threadId, projectId },
         ]);
 
+        const arcResult = yield* Effect.promise(() =>
+          manager.runStackedAction(targetKey).run(registry, {
+            actionId: arcActionId,
+            action,
+            vcsKind: "arc",
+            featureBranch: true,
+          }),
+        );
+
+        expect(AsyncResult.isSuccess(arcResult)).toBe(true);
+        expect(arcRpcInputs).toEqual([{ actionId: arcTransportActionId, cwd, action }]);
+        expect(registry.get(state).revision).toBe(2);
+
         const failedResult = yield* Effect.promise(() =>
           manager.runStackedAction(targetKey).run(registry, {
             actionId: failedActionId,
@@ -555,8 +584,8 @@ describe("vcsActionState", () => {
           actionId: failedActionId,
           error: "Source control action 'commit_push' failed during push.",
         });
-        expect(registry.get(state).revision).toBe(2);
-        expect(removed).toEqual([`${environmentId}:*`, `${environmentId}:*`]);
+        expect(registry.get(state).revision).toBe(3);
+        expect(removed).toEqual([`${environmentId}:*`, `${environmentId}:*`, `${environmentId}:*`]);
 
         const interruptedResult = yield* Effect.promise(() =>
           manager.runStackedAction(targetKey).run(registry, {
@@ -570,8 +599,13 @@ describe("vcsActionState", () => {
           expect(Cause.hasInterruptsOnly(interruptedResult.cause)).toBe(true);
         }
         expect(registry.get(manager.stateAtom(targetKey))).toEqual(EMPTY_VCS_ACTION_STATE);
-        expect(registry.get(state).revision).toBe(3);
-        expect(removed).toEqual([`${environmentId}:*`, `${environmentId}:*`, `${environmentId}:*`]);
+        expect(registry.get(state).revision).toBe(4);
+        expect(removed).toEqual([
+          `${environmentId}:*`,
+          `${environmentId}:*`,
+          `${environmentId}:*`,
+          `${environmentId}:*`,
+        ]);
       }),
     ),
   );

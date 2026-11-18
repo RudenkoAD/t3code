@@ -10,6 +10,16 @@ On iPhone and Android, voice input transcribes on the device by default. To opt 
 to a named environment on that phone, open **Settings → Voice → Transcribe on**. See
 [Voice input on mobile](./composer.md#voice-input-on-mobile).
 
+## Talk to Codex on web and desktop
+
+Open a thread where Codex has already responded and select **Start live voice** beside
+the dictation microphone. Allow microphone access to speak with Codex and hear its
+replies. You can interrupt an answer or give Codex work in the current thread.
+Use **Mute live voice** to pause your microphone or **Stop live voice** to end the call.
+
+Live voice uses the Codex sign-in on the thread’s environment. Your device sends
+call audio directly to OpenAI over WebRTC. Web access requires HTTPS or localhost.
+
 ## Choose where audio goes
 
 On web and desktop, you choose where transcription runs.

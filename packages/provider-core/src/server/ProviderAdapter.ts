@@ -690,6 +690,22 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly modelSelection?: ModelSelection;
     readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
+  /** Experimental Codex realtime voice signaling over a live provider session. */
+  readonly startRealtime?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly callId: string;
+    readonly offer: string;
+    readonly modelSelection: ModelSelection;
+    readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
+    readonly onTurnStarted: (input: {
+      readonly nativeTurnId: string;
+      readonly text: string;
+    }) => Effect.Effect<void, Error>;
+  }) => Effect.Effect<{ readonly answer: string }, ProviderAdapterV2Error>;
+  readonly stopRealtime?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly callId: string;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
   /** False means the native protocol explicitly does not support history injection. */
   readonly injectHistory?: (
     input: ProviderAdapterV2HistoricalContext & {
@@ -698,6 +714,10 @@ export interface ProviderAdapterV2SessionRuntime {
   ) => Effect.Effect<boolean, ProviderAdapterV2Error>;
   readonly startTurn: (
     input: ProviderAdapterV2TurnInput,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly adoptVoiceTurn?: (
+    input: ProviderAdapterV2TurnInput,
+    nativeTurnId: string,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly compactThread?: (
     input: ProviderAdapterV2TurnInput,

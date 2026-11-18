@@ -58,7 +58,11 @@ const transientNativeMethods = new Set([
   "item/plan/delta",
   "item/reasoning/summaryTextDelta",
   "item/reasoning/textDelta",
+  "thread/realtime/item/transcript/delta",
   "thread/realtime/outputAudio/delta",
+  // SDP contains short-lived ICE credentials and network addresses.
+  "thread/realtime/sdp",
+  "thread/realtime/start",
   "thread/realtime/transcript/delta",
   "turn/diff/updated",
 ]);

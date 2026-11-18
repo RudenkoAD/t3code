@@ -16,6 +16,7 @@ import {
   type PlanId,
   type ProjectId,
   type ProjectIconOverride,
+  type ProjectProfile,
   type ProjectScript,
   type ProviderApprovalDecision,
   type ProviderInteractionMode,
@@ -53,6 +54,7 @@ interface CommandMetadata {
 }
 
 export interface CreateProjectInput extends CommandMetadata {
+  readonly profile?: ProjectProfile;
   readonly projectId: ProjectId;
   readonly title: string;
   readonly workspaceRoot: string;
@@ -383,6 +385,7 @@ const mutateProject = Effect.fn("EnvironmentCommands.mutateProject")(function* (
   mutation:
     | {
         readonly type: "project.create";
+        readonly profile?: ProjectProfile;
         readonly commandId: CommandId;
         readonly projectId: ProjectId;
         readonly title: string;
@@ -419,6 +422,7 @@ export const createProject = Effect.fn("EnvironmentCommands.createProject")(func
     projectId: input.projectId,
     title: input.title,
     workspaceRoot: input.workspaceRoot,
+    ...(input.profile === undefined ? {} : { profile: input.profile }),
     ...(input.createWorkspaceRootIfMissing === undefined
       ? {}
       : { createWorkspaceRootIfMissing: input.createWorkspaceRootIfMissing }),

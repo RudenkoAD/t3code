@@ -1442,6 +1442,236 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       };
     });
 
+  it.effect(
+    "adopts unsolicited realtime turns and replays buffered items through the normal turn",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = "realtime-voice-thread";
+          const nativeTurnId = "realtime-voice-turn";
+          const releaseAdoption = yield* Deferred.make<void>();
+          const callbackStarted = yield* Deferred.make<void>();
+          const commandItem = {
+            type: "commandExecution",
+            id: "voice-command",
+            command: "echo voice",
+            cwd: "/workspace",
+            processId: "voice-process",
+            source: "unifiedExecStartup",
+            status: "inProgress",
+            commandActions: [{ type: "unknown", command: "echo voice" }],
+            aggregatedOutput: null,
+            exitCode: null,
+            durationMs: null,
+          };
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: "realtime-voice-turn",
+              entries: [
+                ...codexReplayPreamble({
+                  nativeThreadId,
+                  nativeTurnId: "unused",
+                  prompt: "unused",
+                }).slice(0, 5),
+                {
+                  type: "expect_outbound",
+                  label: "thread/realtime/start",
+                  frame: {
+                    id: 3,
+                    method: "thread/realtime/start",
+                    params: {
+                      threadId: nativeThreadId,
+                      transport: { type: "webrtc", sdp: "offer-sdp" },
+                      version: "v3",
+                      outputModality: "audio",
+                      includeStartupContext: true,
+                      flushTranscriptTailOnSessionEnd: true,
+                    },
+                  },
+                },
+                { type: "emit_inbound", frame: { id: 3, result: {} } },
+                {
+                  type: "emit_inbound",
+                  label: "thread/realtime/itemAdded/stale-handoff",
+                  frame: {
+                    method: "thread/realtime/itemAdded",
+                    params: {
+                      threadId: nativeThreadId,
+                      item: {
+                        type: "handoff_request",
+                        input_transcript: "Old transcript",
+                        handoff_id: "voice-handoff-1",
+                        item_id: "voice-item-1",
+                      },
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "thread/realtime/itemAdded/latest-handoff",
+                  frame: {
+                    method: "thread/realtime/itemAdded",
+                    params: {
+                      threadId: nativeThreadId,
+                      item: {
+                        type: "handoff_request",
+                        input_transcript: "Run a command.",
+                        handoff_id: "voice-handoff-2",
+                        item_id: "voice-item-2",
+                      },
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "thread/realtime/sdp",
+                  frame: {
+                    method: "thread/realtime/sdp",
+                    params: { threadId: nativeThreadId, sdp: "answer-sdp" },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "turn/started/voice",
+                  frame: {
+                    method: "turn/started",
+                    params: {
+                      threadId: nativeThreadId,
+                      turn: {
+                        ...makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }),
+                        items: [],
+                      },
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "item/started/voice-command",
+                  frame: {
+                    method: "item/started",
+                    params: {
+                      threadId: nativeThreadId,
+                      turnId: nativeTurnId,
+                      startedAtMs: 1782622441000,
+                      item: commandItem,
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "item/completed/voice-command",
+                  frame: {
+                    method: "item/completed",
+                    params: {
+                      threadId: nativeThreadId,
+                      turnId: nativeTurnId,
+                      completedAtMs: 1782622442000,
+                      item: {
+                        ...commandItem,
+                        status: "completed",
+                        aggregatedOutput: "voice output\n",
+                        exitCode: 0,
+                        durationMs: 10,
+                      },
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  label: "turn/completed/voice",
+                  frame: {
+                    method: "turn/completed",
+                    params: {
+                      threadId: nativeThreadId,
+                      turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                    },
+                  },
+                },
+                {
+                  type: "expect_outbound",
+                  label: "thread/realtime/stop",
+                  frame: {
+                    id: 4,
+                    method: "thread/realtime/stop",
+                    params: { threadId: nativeThreadId },
+                  },
+                },
+                { type: "emit_inbound", frame: { id: 4, result: {} } },
+              ],
+            }),
+            undefined,
+            undefined,
+            undefined,
+            (entry) =>
+              entry.label === "item/completed/voice-command"
+                ? Deferred.succeed(releaseAdoption, undefined).pipe(
+                    Effect.andThen(Deferred.await(callbackStarted)),
+                  )
+                : Effect.void,
+          );
+
+          const voiceProviderThread = { ...harness.providerThread, status: "active" as const };
+          const input = makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: voiceProviderThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-realtime-voice"),
+            text: "Run a command.",
+          });
+          const result = yield* harness.runtime.startRealtime!({
+            providerThread: voiceProviderThread,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+            callId: "voice-call-1",
+            offer: "offer-sdp",
+            onTurnStarted: ({ nativeTurnId: startedNativeTurnId, text }) =>
+              Effect.gen(function* () {
+                assert.equal(text, "Run a command.");
+                yield* Deferred.succeed(callbackStarted, undefined);
+                yield* Deferred.await(releaseAdoption);
+                yield* harness.runtime.adoptVoiceTurn!(input, startedNativeTurnId);
+              }),
+          });
+
+          assert.deepEqual(result, { answer: "answer-sdp" });
+          yield* Deferred.await(callbackStarted);
+          yield* harness.awaitTerminal(1);
+          const command = harness.events.findLast(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "command_execution" &&
+              event.turnItem.input === "echo voice" &&
+              event.turnItem.status === "completed",
+          );
+          assert.isDefined(command);
+          if (
+            command?.type === "turn_item.updated" &&
+            command.turnItem.type === "command_execution"
+          ) {
+            assert.equal(command.turnItem.output, "voice output\n");
+          }
+          assert.equal(harness.terminalEvents()[0]?.status, "completed");
+          yield* harness.runtime.stopRealtime!({
+            providerThread: harness.providerThread,
+            callId: "stale-voice-call",
+          });
+          yield* harness.runtime.stopRealtime!({
+            providerThread: harness.providerThread,
+            callId: "voice-call-1",
+          });
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+  );
+
   it.effect("keeps native image views available to the clients", () =>
     Effect.gen(function* () {
       const nativeThreadId = "image-view-thread";
@@ -3286,6 +3516,95 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect("refreshes only the native Codex thread when project MCP policy changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-project-mcp-policy-refresh";
+        const nativeThreadId = `native-${scenario}-thread`;
+        const entries = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "unused-turn",
+          prompt: "unused-prompt",
+        }).slice(0, 5);
+        const unsubscribeAndResume = (id: number, config: Record<string, unknown>) => [
+          {
+            type: "expect_outbound" as const,
+            label: `unsubscribe-${id}`,
+            frame: { id, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+          },
+          {
+            type: "emit_inbound" as const,
+            label: `unsubscribe-${id}`,
+            frame: { id, result: { status: "unsubscribed" } },
+          },
+          {
+            type: "expect_outbound" as const,
+            label: `resume-${id}`,
+            frame: {
+              id: id + 1,
+              method: "thread/resume",
+              params: { threadId: nativeThreadId, excludeTurns: true, config },
+            },
+          },
+          {
+            type: "emit_inbound" as const,
+            label: `resume-${id}`,
+            frame: {
+              id: id + 1,
+              result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } },
+            },
+          },
+        ];
+        const blockedConfig = {
+          ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+          mcp_servers: { blocked: { enabled: false } },
+        };
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...entries,
+            ...unsubscribeAndResume(3, blockedConfig),
+            ...unsubscribeAndResume(5, CodexAdapterV2.CODEX_THREAD_CONFIG),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        const session = {
+          environmentId: EnvironmentId.make(`environment-${scenario}`),
+          threadId: harness.threadId,
+          providerSessionId: `provider-session-${scenario}`,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer test-token",
+          browserToolsAvailable: true,
+          nativeToolPolicy: { deniedMcpServers: ["blocked"], deniedSkills: [] },
+        };
+        yield* sessions.set(session);
+        yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+        yield* sessions.set({
+          ...session,
+          nativeToolPolicy: { deniedMcpServers: [], deniedSkills: [] },
+        });
+        yield* harness.runtime.resumeThread({
+          providerThread: harness.providerThread,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        });
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
   // regression: #15389 archived native Codex sessions resume via thread/unarchive
   it.effect.each(
     (
@@ -3938,7 +4257,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             Effect.provide(
               ProviderReplayHarness.layerWithRegistry(
                 { name: "codex-capacity-retry", runtimePolicyOverride: { cwd } },
-                CodexAdapterV2Testkit.layer({ transcript: localTranscript, driver }),
+                CodexAdapterV2Testkit.layer({
+                  transcript: localTranscript,
+                  driver,
+                  additionalInstanceIds: [ProviderInstanceId.make("t3profile_personal_codex")],
+                }),
                 { runEffectWorker: false },
               ),
             ),
@@ -5609,6 +5932,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               CodexAdapterV2Testkit.layer({
                 transcript: localTranscript,
                 driver: replayDriver,
+                additionalInstanceIds: [ProviderInstanceId.make("t3profile_personal_codex")],
               }),
               { runEffectWorker: false },
             ),
@@ -5725,7 +6049,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           Effect.provide(
             ProviderReplayHarness.layerWithRegistry(
               { name: "codex-background-stop-untracked", runtimePolicyOverride: { cwd } },
-              CodexAdapterV2Testkit.layer({ transcript: withConfigReads(localTranscript) }),
+CodexAdapterV2Testkit.layer({
+                transcript: withConfigReads(localTranscript),
+                additionalInstanceIds: [ProviderInstanceId.make("t3profile_personal_codex")],
+              }),
               { runEffectWorker: false },
             ),
           ),

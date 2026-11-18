@@ -11,6 +11,10 @@ it("runs a driver for every host the server and clients read, in their order", (
   );
 });
 
+it("registers the Arcanum watch backend", () => {
+  expect(BUILT_IN_SOURCE_CONTROL_DRIVER_LIST.map((driver) => driver.kind)).toContain("arcanum");
+});
+
 it.each([
   "C:/repos/project",
   "C:\\repos\\project",

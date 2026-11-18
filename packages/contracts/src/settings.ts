@@ -33,7 +33,7 @@ import {
   ProviderOptionSelections,
 } from "./model.ts";
 import { ModelSelection } from "./modelSelection.ts";
-import { ProjectScript, type ProjectMutation } from "./project.ts";
+import { ProjectProfile, ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
 import {
@@ -1197,6 +1197,42 @@ export const ProjectProviderInstanceOverride = Schema.Struct({
 });
 export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOverride.Type;
 
+export const ProjectProfileToolKind = Schema.Literals(["mcpServers", "skills"]);
+export type ProjectProfileToolKind = typeof ProjectProfileToolKind.Type;
+export const ProjectProfileToolProvider = Schema.Literals(["codex", "claude"]);
+export type ProjectProfileToolProvider = typeof ProjectProfileToolProvider.Type;
+const ProjectProfileToolDenials = Schema.Record(TrimmedNonEmptyString, Schema.Literal(true));
+const ProjectProfileToolDenialsPatch = Schema.Record(
+  TrimmedNonEmptyString,
+  Schema.NullOr(Schema.Literal(true)),
+);
+const ProjectProfileToolProviderDenials = Schema.Struct({
+  codex: Schema.optionalKey(ProjectProfileToolDenials),
+  claude: Schema.optionalKey(ProjectProfileToolDenials),
+});
+const ProjectProfileToolProviderDenialsPatch = Schema.Struct({
+  codex: Schema.optionalKey(Schema.NullOr(ProjectProfileToolDenialsPatch)),
+  claude: Schema.optionalKey(Schema.NullOr(ProjectProfileToolDenialsPatch)),
+});
+const ProjectProfileToolAccess = Schema.Struct({
+  mcpServers: Schema.optionalKey(ProjectProfileToolProviderDenials),
+  skills: Schema.optionalKey(ProjectProfileToolProviderDenials),
+});
+const ProjectProfileToolAccessPatch = Schema.Struct({
+  mcpServers: Schema.optionalKey(Schema.NullOr(ProjectProfileToolProviderDenialsPatch)),
+  skills: Schema.optionalKey(Schema.NullOr(ProjectProfileToolProviderDenialsPatch)),
+});
+const ProjectProfileToolAccessByProfile = Schema.Struct({
+  work: Schema.optionalKey(ProjectProfileToolAccess),
+  personal: Schema.optionalKey(ProjectProfileToolAccess),
+});
+const ProjectProfileToolAccessByProfilePatch = Schema.Struct({
+  work: Schema.optionalKey(Schema.NullOr(ProjectProfileToolAccessPatch)),
+  personal: Schema.optionalKey(Schema.NullOr(ProjectProfileToolAccessPatch)),
+});
+export type ProjectProfileToolAccess = typeof ProjectProfileToolAccess.Type;
+export type ProjectProfileToolAccessPatch = typeof ProjectProfileToolAccessPatch.Type;
+
 /** Absent keys inherit; null is a value for nullable settings.
  * providerInstances overrides fields per instance; other keys replace the whole setting. */
 export const ProjectSettingsOverrides = Schema.Struct({
@@ -1227,10 +1263,15 @@ export const ProjectSettingsOverrides = Schema.Struct({
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   speechProjectCustomWords: Schema.optionalKey(SpeechCustomWords),
+  /** Explicit per-project denials, scoped to the project's Work/Personal native profile. */
+  profileToolAccess: Schema.optionalKey(ProjectProfileToolAccessByProfile),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
-} satisfies Record<ProjectScopedServerSettingKey | "providerInstances", unknown>);
+} satisfies Record<
+  ProjectScopedServerSettingKey | "providerInstances" | "profileToolAccess",
+  unknown
+>);
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 // Whole-entry writers must round-trip unknown keys; keep the type closed to catch misspellings.
@@ -1349,6 +1390,22 @@ export const CloudSpeechCredentials = Schema.Struct({
   openrouter: CloudSpeechCredential,
 });
 
+const ProfileProviderSettings = Schema.Struct({
+  codexEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  claudeEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+});
+type ProfileProviderSettings = typeof ProfileProviderSettings.Type;
+
+const ProfileProviderSettingsPatch = Schema.Struct({
+  codexEnabled: Schema.optionalKey(Schema.Boolean),
+  claudeEnabled: Schema.optionalKey(Schema.Boolean),
+});
+
+const DEFAULT_PROFILE_PROVIDER_SETTINGS = {
+  work: { codexEnabled: true, claudeEnabled: true },
+  personal: { codexEnabled: true, claudeEnabled: true },
+} as const satisfies Record<ProjectProfile, ProfileProviderSettings>;
+
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1415,6 +1472,19 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE)),
   ),
 
+  projectProfiles: Schema.Record(ProjectId, ProjectProfile).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  profileToolAccess: Schema.Struct({
+    work: Schema.Struct({
+      enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+      enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
+    }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    personal: Schema.Struct({
+      enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+      enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
+    }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  }).pipe(Schema.withDecodingDefault(Effect.succeed({ work: {}, personal: {} }))),
   projectSettingsOverrides: Schema.Record(
     ProjectId,
     keepUnknownOverrideKeys(ProjectSettingsOverrides),
@@ -1544,6 +1614,14 @@ export const ServerSettings = Schema.Struct({
   providerInstances: Schema.Record(ProviderInstanceId, ProviderInstanceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  profileProviderSettings: Schema.Struct({
+    work: ProfileProviderSettings.pipe(
+      Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROFILE_PROVIDER_SETTINGS.work)),
+    ),
+    personal: ProfileProviderSettings.pipe(
+      Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROFILE_PROVIDER_SETTINGS.personal)),
+    ),
+  }).pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROFILE_PROVIDER_SETTINGS))),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sourceControlHosts: Schema.Record(Schema.String, SourceControlHostSettings).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
@@ -1576,7 +1654,106 @@ export const ServerSettings = Schema.Struct({
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
+export function isProjectProfileToolDenied(
+  settings: Pick<ServerSettings, "projectSettingsOverrides">,
+  projectId: ProjectId | null,
+  profile: ProjectProfile,
+  kind: ProjectProfileToolKind,
+  provider: ProjectProfileToolProvider,
+  name: string,
+): boolean {
+  if (projectId === null) return false;
+  return (
+    settings.projectSettingsOverrides[projectId]?.profileToolAccess?.[profile]?.[kind]?.[
+      provider
+    ]?.[name] === true
+  );
+}
+
 export const DEFAULT_SERVER_SETTINGS: ServerSettings = Schema.decodeSync(ServerSettings)({});
+
+export const resolveProjectProfile = (
+  settings: Pick<ServerSettings, "projectProfiles">,
+  projectId: ProjectId | null,
+): ProjectProfile =>
+  projectId === null ? "personal" : (settings.projectProfiles[projectId] ?? "personal");
+
+export const profileProviderInstanceId = (
+  profile: ProjectProfile,
+  instanceId: ProviderInstanceId,
+): ProviderInstanceId => ProviderInstanceId.make(`t3profile_${profile}_${instanceId}`);
+
+export const profileProviderInstanceBaseId = (
+  instanceId: ProviderInstanceId,
+): { readonly profile: ProjectProfile; readonly baseId: ProviderInstanceId } | undefined => {
+  for (const profile of ["work", "personal"] as const) {
+    const prefix = `t3profile_${profile}_`;
+    if (instanceId.startsWith(prefix)) {
+      const baseId = instanceId.slice(prefix.length);
+      if (baseId === "codex" || baseId === "claudeAgent") {
+        return { profile, baseId: ProviderInstanceId.make(baseId) };
+      }
+    }
+  }
+  return undefined;
+};
+
+type ProfileAwareProviderSettings = Pick<
+  ServerSettings,
+  "providerInstances" | "projectSettingsOverrides"
+> &
+  Partial<Pick<ServerSettings, "projectProfiles" | "profileProviderSettings">>;
+
+const isProfileProviderEnabled = (
+  settings: Pick<ServerSettings, "profileProviderSettings">,
+  profile: ProjectProfile,
+  instanceId: ProviderInstanceId,
+): boolean => {
+  switch (instanceId) {
+    case "codex":
+      return settings.profileProviderSettings[profile].codexEnabled;
+    case "claudeAgent":
+      return settings.profileProviderSettings[profile].claudeEnabled;
+    default:
+      return false;
+  }
+};
+
+/** Resolve old unscoped selections into a profile-specific provider ID. */
+export const resolveProjectProviderInstanceId = (
+  settings: ProfileAwareProviderSettings,
+  projectId: ProjectId | null,
+  instanceId: ProviderInstanceId,
+): ProviderInstanceId | undefined => {
+  if (projectId === null) return instanceId;
+  // Partial settings are used by older clients and narrow helper tests; the server always has both maps.
+  if (settings.projectProfiles === undefined || settings.profileProviderSettings === undefined) {
+    return instanceId;
+  }
+  const profile = resolveProjectProfile(
+    settings as Pick<ServerSettings, "projectProfiles">,
+    projectId,
+  );
+  const parsed = profileProviderInstanceBaseId(instanceId);
+  if (parsed !== undefined) {
+    return parsed.profile === profile &&
+      isProfileProviderEnabled(
+        settings as Pick<ServerSettings, "profileProviderSettings">,
+        profile,
+        parsed.baseId,
+      )
+      ? instanceId
+      : undefined;
+  }
+  const scopedId = profileProviderInstanceId(profile, instanceId);
+  return isProfileProviderEnabled(
+    settings as Pick<ServerSettings, "profileProviderSettings">,
+    profile,
+    instanceId,
+  )
+    ? scopedId
+    : undefined;
+};
 
 export const providerInstanceConfigEnabledFlag = (config: unknown): boolean | undefined => {
   if (config === null || typeof config !== "object" || Array.isArray(config)) {
@@ -1614,15 +1791,44 @@ export const resolveProviderInstanceEnabled = (
 };
 
 export const resolveProjectProviderInstanceEnabled = (
-  settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
+  settings: ProfileAwareProviderSettings,
   projectId: ProjectId | null,
   instanceId: ProviderInstanceId,
 ): boolean => {
-  const override =
-    projectId === null
-      ? undefined
-      : settings.projectSettingsOverrides[projectId]?.providerInstances?.[instanceId]?.enabled;
-  if (override !== undefined) return override;
+  if (projectId !== null) {
+    const scopedId = resolveProjectProviderInstanceId(settings, projectId, instanceId);
+    if (scopedId === undefined) return false;
+    const profile =
+      settings.projectProfiles === undefined
+        ? undefined
+        : resolveProjectProfile(settings as Pick<ServerSettings, "projectProfiles">, projectId);
+    if (profile === undefined || settings.profileProviderSettings === undefined) {
+      const legacyOverride =
+        settings.projectSettingsOverrides[projectId]?.providerInstances?.[instanceId]?.enabled;
+      if (legacyOverride !== undefined) return legacyOverride;
+      const legacyConfig = settings.providerInstances[instanceId];
+      return legacyConfig !== undefined
+        ? resolveProviderInstanceEnabled(legacyConfig)
+        : isUnconfiguredDefaultInstanceEnabled(instanceId);
+    }
+    const parsed = profileProviderInstanceBaseId(scopedId);
+    const scopedOverride =
+      settings.projectSettingsOverrides[projectId]?.providerInstances?.[scopedId]?.enabled;
+    const legacyOverride =
+      parsed === undefined
+        ? undefined
+        : settings.projectSettingsOverrides[projectId]?.providerInstances?.[parsed.baseId]?.enabled;
+    const override = scopedOverride ?? legacyOverride;
+    if (override !== undefined) return override;
+    return (
+      parsed !== undefined &&
+      isProfileProviderEnabled(
+        settings as Pick<ServerSettings, "profileProviderSettings">,
+        profile,
+        parsed.baseId,
+      )
+    );
+  }
   const instanceConfig = Object.hasOwn(settings.providerInstances, instanceId)
     ? settings.providerInstances[instanceId]
     : undefined;
@@ -1642,15 +1848,22 @@ export const textGeneratorForSelection = (
 
 /** Whether a text generation selection can run: an enabled text generator or provider instance. */
 export const resolveTextGenerationSelectionEnabled = (
-  settings: Pick<
-    ServerSettings,
-    "providerInstances" | "projectSettingsOverrides" | "textGenerators"
-  >,
+  settings: ProfileAwareProviderSettings & Pick<ServerSettings, "textGenerators">,
   projectId: ProjectId | null,
   instanceId: ProviderInstanceId,
-): boolean =>
-  textGeneratorForSelection(settings, instanceId)?.enabled ??
-  resolveProjectProviderInstanceEnabled(settings, projectId, instanceId);
+): boolean => {
+  if (
+    projectId !== null &&
+    settings.projectProfiles !== undefined &&
+    settings.profileProviderSettings !== undefined
+  ) {
+    return resolveProjectProviderInstanceEnabled(settings, projectId, instanceId);
+  }
+  return (
+    textGeneratorForSelection(settings, instanceId)?.enabled ??
+    resolveProjectProviderInstanceEnabled(settings, projectId, instanceId)
+  );
+};
 
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 
@@ -1852,7 +2065,32 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   fallbackModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
-  /** Replaces each project's override set; null removes it. Omitted providerInstances retains its stored value. */
+  projectProfiles: Schema.optionalKey(Schema.Record(ProjectId, Schema.NullOr(ProjectProfile))),
+  profileToolAccess: Schema.optionalKey(
+    Schema.Struct({
+      work: Schema.optionalKey(
+        Schema.NullOr(
+          Schema.Struct({
+            enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+            enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
+          }),
+        ),
+      ),
+      personal: Schema.optionalKey(
+        Schema.NullOr(
+          Schema.Struct({
+            enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+            enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
+          }),
+        ),
+      ),
+    }),
+  ),
+  /** Sparse project tool-policy updates; never included in settings snapshots. */
+  projectProfileToolAccessOverrides: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.NullOr(ProjectProfileToolAccessByProfilePatch)),
+  ),
+  /** Replaces ordinary project overrides; null clears them but retains project tool denials. */
   projectSettingsOverrides: Schema.optionalKey(
     Schema.Record(
       ProjectId,
@@ -1860,6 +2098,9 @@ export const ServerSettingsPatch = Schema.Struct({
         keepUnknownOverrideKeys(
           Schema.Struct({
             ...ProjectSettingsOverrides.fields,
+            profileToolAccess: Schema.optionalKey(
+              Schema.NullOr(ProjectProfileToolAccessByProfilePatch),
+            ),
             sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSettings),
           }),
         ),
@@ -1933,6 +2174,13 @@ export const ServerSettingsPatch = Schema.Struct({
   offeredSourceControlProviders: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
   // Replace whole maps to avoid half-merged driver configs.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
+  // Merge per profile so edits in one scope cannot erase the other.
+  profileProviderSettings: Schema.optionalKey(
+    Schema.Struct({
+      work: Schema.optionalKey(ProfileProviderSettingsPatch),
+      personal: Schema.optionalKey(ProfileProviderSettingsPatch),
+    }),
+  ),
   // Merge per source to avoid racing other edits; null removes an entry.
   usageLimitSources: Schema.optionalKey(
     Schema.Record(UsageLimitSourceId, Schema.NullOr(UsageLimitSourceConfig)),
@@ -1965,6 +2213,7 @@ export function requiredScopesForServerSettingsPatch(
     if (
       key === "providers" ||
       key === "providerInstances" ||
+      key === "profileProviderSettings" ||
       key === "usageLimitSources" ||
       key === "textGenerators" ||
       key === "secretProviders"
@@ -1978,6 +2227,9 @@ export function requiredScopesForServerSettingsPatch(
   if (Object.values(patch.secretProviders ?? {}).some((entry) => entry === null)) {
     changesSettings = true;
   }
+  // Project tool access controls provider configuration exposure and uses its own sparse patch
+  // channel so settings snapshots cannot echo or erase policy accidentally.
+  if (patch.projectProfileToolAccessOverrides !== undefined) changesProviders = true;
   return [
     ...(changesSettings || !changesProviders ? [AuthSettingsWriteScope] : []),
     ...(changesProviders ? [AuthProvidersManageScope] : []),

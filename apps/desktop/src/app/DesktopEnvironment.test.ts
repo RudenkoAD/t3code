@@ -72,4 +72,13 @@ describe("DesktopEnvironment", () => {
       assert.equal(production.stateDir, "/Users/alice/.t3/userdata");
     }),
   );
+
+  it.effect("labels local fork builds distinctly from the upstream beta app", () =>
+    Effect.gen(function* () {
+      const fork = yield* makeEnvironment({ appVersion: "0.1.9-local-fork" });
+
+      assert.equal(fork.branding.stageLabel, "Fork");
+      assert.equal(fork.displayName, "T3 Code (Fork)");
+    }),
+  );
 });

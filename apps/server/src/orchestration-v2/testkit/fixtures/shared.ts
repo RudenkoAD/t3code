@@ -997,6 +997,7 @@ export function assertBaseProjection(input: {
   readonly result: OrchestratorV2ScenarioResult;
   readonly transcript: ProviderReplayTranscript;
   readonly runCount: number;
+  readonly providerInstanceId?: ProviderInstanceId;
   readonly providerTurnCountAtLeast?: number;
   readonly runStatuses?: ReadonlyArray<OrchestrationV2RunStatus>;
 }) {
@@ -1004,7 +1005,7 @@ export function assertBaseProjection(input: {
 
   assert.equal(
     projection.thread.providerInstanceId,
-    ProviderInstanceId.make(input.transcript.provider),
+    input.providerInstanceId ?? ProviderInstanceId.make(input.transcript.provider),
   );
   assert.lengthOf(projection.runs, input.runCount);
   assert.isAtLeast(projection.providerThreads.length, 1);

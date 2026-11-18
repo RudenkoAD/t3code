@@ -69,6 +69,37 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
+  it.effect("requires orchestration operate permission for Codex realtime start and stop", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const realtime = [
+          createCommandPermissions(runtime, WS_METHODS.codexRealtimeStart),
+          createCommandPermissions(runtime, WS_METHODS.codexRealtimeStop),
+        ];
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthOrchestrationReadScope],
+            permissions: [AuthOrchestrationReadScope],
+          }),
+        );
+        for (const command of realtime) {
+          expect(registry.get(command.permissionAtom(env))).toBe(false);
+          expect((yield* command.authorize(registry, env).pipe(Effect.flip)).requiredScope).toBe(
+            AuthOrchestrationOperateScope,
+          );
+        }
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        for (const command of realtime) {
+          expect(registry.get(command.permissionAtom(env))).toBe(true);
+          yield* command.authorize(registry, env);
+        }
+      }),
+    ),
+  );
+
   it.effect("requires the destination read grant to refresh providers", () =>
     Effect.scoped(
       Effect.gen(function* () {

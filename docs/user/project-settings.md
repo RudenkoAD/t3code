@@ -1,5 +1,60 @@
 # Settings and project overrides
 
+## Work and Personal profiles
+
+When adding a folder from **All profiles**, T3 assigns an Arc checkout to **Work** and other
+folders to **Personal**. Select **Work** or **Personal** first to choose the profile yourself.
+Existing projects keep their assignment, with **Personal** as the default for earlier versions.
+Use a project's context menu to move all its chats to the other profile.
+
+Open **Settings → Providers** and choose **Work tools** or **Personal tools**. Each profile
+has its own Codex and Claude Code configuration directory on the machine running T3.
+These are the two providers available in profile-scoped chats.
+Under **Configured MCP servers**, switch an existing server on or off for Codex or Claude Code.
+Turning it back on restores its saved configuration. Restart the T3 server (quit and reopen
+the desktop app on a local Mac) to apply changes to active provider sessions.
+Use **Refresh** after editing a provider's file from the terminal. Each provider also has
+a sign-in command for its profile directory.
+
+To add a user-level MCP server, run the provider's command in a terminal with the
+corresponding profile directory. For example, with the default desktop data location:
+
+```sh
+CODEX_HOME="$HOME/.t3/userdata/profiles/work/codex" codex mcp add my-server -- /path/to/server
+CLAUDE_CONFIG_DIR="$HOME/.t3/userdata/profiles/work/claude" claude mcp add --scope user my-server -- /path/to/server
+```
+
+Use `personal` in the path to configure personal chats. Complete the provider's login in
+each new home as needed. The same settings page controls T3 shared browser and device tools
+for the profile. A project's explicit tool override takes precedence.
+
+## Choose tools for one project
+
+Open **Project settings** from the project's sidebar menu, or select it under
+**Settings → Projects**. In **Tools**, choose **Codex** or
+**Claude Code**, then **MCP servers** or **Skills**. The list shows tools from the
+project's Work or Personal profile and tools the provider discovers in that checkout.
+
+Switch off a name to exclude it from this project's chats with the selected provider.
+For example, you can keep Blender available in a 3D project and turn it off in a
+coursework project that uses the same Personal profile. Choose **Inherit** beside a
+name to restore it. **Reset this list** restores all exclusions for the selected
+provider and tool type. Each project keeps separate choices for Work and Personal
+when you move it between profiles.
+
+Changes apply to the next turn in the chat. A turn already in progress finishes
+with its current tools. Claude Code can still list the name of a disabled plugin
+skill internally. T3 hides it from the composer and Claude blocks its invocation.
+
+To add a skill for just one repository, place its `SKILL.md` in
+`.agents/skills/<name>/` for Codex or `.claude/skills/<name>/` for Claude Code.
+You can also define a project MCP server in `.codex/config.toml` or Claude's
+`.mcp.json`. For Codex, the project list reads the configuration at the checkout
+root when that path is explicitly trusted in its profile. For Claude, approve the
+project and its servers with the CLI. Choose **Refresh** to reload the list.
+
+## Settings scope
+
 On web and desktop, the "Applying settings for …" sentence at the top of Settings pages picks
 the project and environment a change applies to. Pages that only hold device preferences, such as
 Appearance, don't show it. They start at **All projects** and **All environments**

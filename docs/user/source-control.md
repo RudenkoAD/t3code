@@ -3,6 +3,19 @@
 T3 Code integrates with GitHub, GitLab, Forgejo, Gitea, Bitbucket, Azure DevOps, GitCafe, and Cursor
 Origin to clone and publish repositories, create pull requests, and review changes.
 
+## Arc and Arcanum
+
+Add the project directory inside a mounted Arc checkout. The chat shows the current Arc
+branch, changed files, and the branch's Arcanum review. Use the source control menu in a
+writable task mount to commit selected files, push the branch, or create a review. Open the
+review link to inspect it in Arcanum. The Diff pane can show uncommitted changes or compare
+the current branch against its base. Create or switch task branches and mounts with your
+usual Arc workflow, then open the resulting project directory in T3. Use the shared trunk
+mount for inspection.
+
+Work and Personal select the agent's tools. Source control follows the checkout, so a Work
+project backed by Git still uses its configured Git host.
+
 ## Review turn changes
 
 A turn's changed files and diff show only the turn's own work. When a turn pulls, merges, or

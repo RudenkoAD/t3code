@@ -12,9 +12,11 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
@@ -36,6 +38,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import * as RepositoryLocator from "../vcs/RepositoryLocator.ts";
 
 export interface ProjectCreateInput extends ProjectCreatePayload {
   readonly commandId: CommandId;
@@ -181,6 +184,7 @@ export const make = Effect.gen(function* () {
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
   const projectLocks = yield* KeyedLock.make<ProjectId>();
   const workspaceLocks = yield* KeyedLock.make<string>();
@@ -207,10 +211,10 @@ export const make = Effect.gen(function* () {
   });
 
   const hydrate = Effect.fn("ProjectService.hydrate")(function* (row: ProjectStore.ProjectRow) {
+    // Deleted rows are returned by delete retries; their optional enrichment cache can change
+    // asynchronously after the first delete, which would make an idempotent retry vary by timing.
     const enrichment =
-      row.deletedAt === null
-        ? yield* projectEnrichment.getAvailable(row.workspaceRoot)
-        : yield* projectEnrichment.peek(row.workspaceRoot);
+      row.deletedAt === null ? yield* projectEnrichment.getAvailable(row.workspaceRoot) : null;
     return toProject(row, enrichment);
   });
 
@@ -244,6 +248,13 @@ export const make = Effect.gen(function* () {
         ),
       );
 
+  const inferProjectProfile = Effect.fn("ProjectService.inferProjectProfile")(function* (
+    workspaceRoot: string,
+  ) {
+    const marker = yield* RepositoryLocator.locateRepositoryMarker(workspaceRoot, fileSystem, path);
+    return marker?.kind === "arc" ? ("work" as const) : ("personal" as const);
+  });
+
   const commit = Effect.fn("ProjectService.commit")(function* (command: ProjectCommand) {
     const { projectId } = command;
     const dispatchError = (cause: unknown) =>
@@ -270,13 +281,31 @@ export const make = Effect.gen(function* () {
         now,
       });
       if (Result.isSuccess(planned)) {
-        const { receipt } = yield* eventSink.commitProjectCommand({
+        const persist = eventSink.commitProjectCommand({
           commandId: command.commandId,
           projectId,
           commandType: command.type,
           acceptedAt: now,
           event: planned.success,
         });
+        const profile = command.type === "project.create" ? command.profile : undefined;
+        if (profile === undefined) return (yield* persist).receipt;
+
+        // Install the profile before the project can admit its first turn.
+        const { receipt } = yield* Effect.acquireUseRelease(
+          Effect.gen(function* () {
+            const previous = (yield* serverSettings.getSettings).projectProfiles[projectId];
+            yield* serverSettings.updateSettings({ projectProfiles: { [projectId]: profile } });
+            return previous;
+          }),
+          () => Effect.uninterruptible(persist),
+          (previous, exit) =>
+            Exit.isSuccess(exit) && exit.value.committed
+              ? Effect.void
+              : serverSettings
+                  .updateSettings({ projectProfiles: { [projectId]: previous ?? null } })
+                  .pipe(Effect.ignoreCause({ log: true })),
+        );
         return receipt;
       }
       return yield* eventSink.commitRejectedProjectCommand({
@@ -383,11 +412,24 @@ export const make = Effect.gen(function* () {
         workspaceRoot: input.workspaceRoot,
         createIfMissing: input.createWorkspaceRootIfMissing ?? false,
       });
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProjectOperationError({
+              operation: "dispatch-project-command",
+              projectId: input.projectId,
+              cause,
+            }),
+        ),
+      );
+      const storedProfile = settings.projectProfiles[input.projectId];
+      const profile = input.profile ?? storedProfile ?? (yield* inferProjectProfile(workspaceRoot));
       yield* commit({
         type: "project.create",
         commandId: input.commandId,
         projectId: input.projectId,
         title: input.title,
+        profile,
         workspaceRoot,
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
       });
@@ -530,15 +572,20 @@ export const make = Effect.gen(function* () {
 
   // Best-effort cleanup releases disabled instances kept alive by overrides; crashes have no replay to revisit deletion.
   const clearProjectSettingsOverrides = (projectId: ProjectId) =>
-    serverSettings.updateSettings({ projectSettingsOverrides: { [projectId]: null } }).pipe(
-      Effect.asVoid,
-      Effect.catchCause((cause) =>
-        Effect.logWarning(
-          `Failed to clear settings overrides for deleted project ${projectId}.`,
-          cause,
+    serverSettings
+      .updateSettings({
+        projectSettingsOverrides: { [projectId]: null },
+        projectProfiles: { [projectId]: null },
+      })
+      .pipe(
+        Effect.asVoid,
+        Effect.catchCause((cause) =>
+          Effect.logWarning(
+            `Failed to clear settings overrides for deleted project ${projectId}.`,
+            cause,
+          ),
         ),
-      ),
-    );
+      );
 
   const deleteProject: ProjectService["Service"]["delete"] = Effect.fn("ProjectService.delete")(
     function* (input) {

@@ -278,6 +278,67 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
+  it.effect("links and watches by host/repository/number or URL", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const explicitLink = yield* harness.call("link_pull_request", {
+        host: "github.com",
+        repository: "T3Tools/T3Code",
+        number: 123,
+      });
+      const urlLink = yield* harness.call("link_pull_request", {
+        url: "https://github.com/t3tools/t3code/pull/124",
+      });
+      const explicitWatch = yield* harness.call("watch_pull_request", {
+        host: "github.com",
+        repository: "T3Tools/T3Code",
+        number: 125,
+      });
+      const urlWatch = yield* harness.call("watch_pull_request", {
+        url: "https://github.com/t3tools/t3code/pull/126",
+      });
+
+      expect(explicitLink).toMatchObject({
+        host: "github.com",
+        repository: "t3tools/t3code",
+        number: 123,
+        url: "https://github.com/t3tools/t3code/pull/123",
+      });
+      expect(urlLink).toMatchObject({
+        number: 124,
+        url: "https://github.com/t3tools/t3code/pull/124",
+      });
+      expect(explicitWatch).toMatchObject({ number: 125, watching: false });
+      expect(urlWatch).toMatchObject({ number: 126, watching: false });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        {
+          type: "thread.pull-request.link",
+          host: "github.com",
+          repository: "t3tools/t3code",
+          number: 123,
+        },
+        {
+          type: "thread.pull-request.link",
+          host: "github.com",
+          repository: "t3tools/t3code",
+          number: 124,
+        },
+        {
+          type: "thread.pull-request.watch",
+          host: "github.com",
+          repository: "t3tools/t3code",
+          number: 125,
+        },
+        {
+          type: "thread.pull-request.watch",
+          host: "github.com",
+          repository: "t3tools/t3code",
+          number: 126,
+        },
+      ]);
+    }),
+  );
+
   it.effect("watching an unlinked pull request links it first", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -381,6 +442,29 @@ describe("pull request toolkit handlers", () => {
         url: "https://github.com/t3tools/t3code/pull/124",
       });
       expect(result).toMatchObject({ number: 124, next: CHILD_PULL_REQUEST_REPORT_NEXT });
+    }),
+  );
+
+  it.effect("links an Arcanum review using its parsed host, repository, and number", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const result = yield* harness.call("link_pull_request", {
+        url: "https://a.yandex-team.ru/review/17236921",
+      });
+      expect(result).toMatchObject({
+        host: "a.yandex-team.ru",
+        repository: "arc_vcs",
+        number: 17236921,
+        url: "https://a.yandex-team.ru/review/17236921",
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        {
+          type: "thread.pull-request.link",
+          host: "a.yandex-team.ru",
+          repository: "arc_vcs",
+          number: 17236921,
+        },
+      ]);
     }),
   );
 

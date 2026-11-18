@@ -4,7 +4,7 @@ import { readLocalApi } from "../localApi";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, ThreadId, VcsDriverKind } from "@t3tools/contracts";
 import { FolderGit2Icon, FolderGitIcon, FolderIcon, PlusIcon, ScaleIcon } from "lucide-react";
 import {
   type Ref,
@@ -85,6 +85,7 @@ interface BranchToolbarProps {
   worktreePath: string | null;
   isServerThread: boolean;
   showGitControls: boolean;
+  vcsKind?: VcsDriverKind;
   draftId?: DraftId;
   onEnvModeChange: (mode: EnvMode) => void;
   envMode: EnvMode;
@@ -603,6 +604,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   worktreePath,
   isServerThread,
   showGitControls,
+  vcsKind,
   draftId,
   onEnvModeChange,
   envMode,
@@ -625,11 +627,13 @@ export const BranchToolbar = memo(function BranchToolbar({
   // The composer retains resolved thread details while bootstrap cleanup can remove its shell.
   const activeProjectRef = scopeProjectRef(environmentId, projectId);
   const activeProject = useProject(activeProjectRef);
-  const activeWorktreePath = forceNewWorktree ? null : worktreePath;
-  const effectiveEnvMode = forceNewWorktree ? "worktree" : envMode;
-  const envModeLocked = envLocked || (isServerThread && activeWorktreePath !== null);
+  const isArcVcs = vcsKind === "arc";
+  const effectiveForceNewWorktree = forceNewWorktree && !isArcVcs;
+  const activeWorktreePath = effectiveForceNewWorktree ? null : worktreePath;
+  const effectiveEnvMode = isArcVcs ? "local" : effectiveForceNewWorktree ? "worktree" : envMode;
+  const envModeLocked = isArcVcs || envLocked || (isServerThread && activeWorktreePath !== null);
 
-  const canUsePreviousWorktree = !isServerThread && !envModeLocked && !forceNewWorktree;
+  const canUsePreviousWorktree = !isServerThread && !envModeLocked && !effectiveForceNewWorktree;
   const projectRefsForWorktreeLookup = canUsePreviousWorktree ? [activeProjectRef] : [];
   const projectThreads = useThreadShellsForProjectRefs(projectRefsForWorktreeLookup);
   const previousWorktreeSeed = canUsePreviousWorktree
@@ -695,7 +699,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           <RunContextSelector
             displayMode="panel"
             workspaceRoot={activeProject.workspaceRoot}
-            forceNewWorktree={forceNewWorktree}
+            forceNewWorktree={effectiveForceNewWorktree}
             autoEnvironmentLabel={autoEnvironmentLabel}
             onAutoEnvironment={onAutoEnvironment}
             envLocked={envLocked}
@@ -745,7 +749,7 @@ export const BranchToolbar = memo(function BranchToolbar({
       {showGitControls ? (
         <div className="contents @xl/composer-surface:hidden">
           <RunContextSelector
-            forceNewWorktree={forceNewWorktree}
+            forceNewWorktree={effectiveForceNewWorktree}
             autoEnvironmentLabel={autoEnvironmentLabel}
             onAutoEnvironment={onAutoEnvironment}
             envLocked={envLocked}
@@ -796,7 +800,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           )}
           {showGitControls ? (
             <BranchToolbarEnvModeSelector
-              forceNewWorktree={forceNewWorktree}
+              forceNewWorktree={effectiveForceNewWorktree}
               envLocked={envModeLocked}
               effectiveEnvMode={effectiveEnvMode}
               activeWorktreePath={activeWorktreePath}
@@ -811,11 +815,12 @@ export const BranchToolbar = memo(function BranchToolbar({
 
       {showGitControls ? (
         <BranchToolbarBranchSelector
-          forceNewWorktree={forceNewWorktree}
+          forceNewWorktree={effectiveForceNewWorktree}
           ref={branchSelectorRef}
           className="min-w-0 flex-initial justify-end @xl/composer-surface:ml-auto"
           environmentId={environmentId}
           threadId={threadId}
+          {...(vcsKind ? { vcsKind } : {})}
           {...(draftId ? { draftId } : {})}
           envLocked={envLocked}
           effectiveEnvModeOverride={effectiveEnvMode}

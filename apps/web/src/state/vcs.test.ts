@@ -27,6 +27,17 @@ const status = (changes: Partial<VcsStatusResult> = {}) =>
   } satisfies VcsStatusResult);
 
 describe("chatGitStatusAtom", () => {
+  it("keeps the repository driver kind in the chat projection", () => {
+    const registry = AtomRegistry.make();
+    const source = Atom.make<AsyncResult.AsyncResult<VcsStatusResult, never>>(status());
+    const selected = chatGitStatusAtom(source as never);
+
+    expect(registry.get(selected)?.vcsKind).toBeUndefined();
+    registry.set(source, status({ vcsKind: "arc" }));
+    expect(registry.get(selected)?.vcsKind).toBe("arc");
+    registry.dispose();
+  });
+
   it("notifies only when a field the chat view reads changes", () => {
     const registry = AtomRegistry.make();
     const source = Atom.make<AsyncResult.AsyncResult<VcsStatusResult, never>>(status());

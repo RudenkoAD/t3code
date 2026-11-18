@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { ArcRunActionInput } from "./arc.ts";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
   AuthAccessWriteScope,
@@ -18,6 +19,11 @@ import { WS_METHODS } from "./rpc.ts";
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.providerAuthRemoveMethod]: AuthProvidersManageScope,
+  [WS_METHODS.codexRealtimeStart]: AuthOrchestrationOperateScope,
+  [WS_METHODS.codexRealtimeStop]: AuthOrchestrationOperateScope,
+  [WS_METHODS.profileMcpInventory]: AuthOrchestrationReadScope,
+  [WS_METHODS.projectToolsInventory]: AuthOrchestrationReadScope,
+  [WS_METHODS.profileSetMcpServerEnabled]: AuthProvidersManageScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   // Stopping a server signals its processes, as closing a terminal does.
   [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,
@@ -54,6 +60,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.projectCloneRetry]: AuthSourceControlWriteScope,
   [WS_METHODS.vcsPull]: AuthSourceControlWriteScope,
   [WS_METHODS.gitRunStackedAction]: AuthSourceControlWriteScope,
+  [WS_METHODS.arcRunAction]: AuthSourceControlWriteScope,
   [WS_METHODS.gitPreparePullRequestThread]: AuthSourceControlWriteScope,
   [WS_METHODS.vcsCreateWorktree]: AuthSourceControlWriteScope,
   [WS_METHODS.vcsRemoveWorktree]: AuthSourceControlWriteScope,
@@ -81,6 +88,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
+const decodeArcAction = Schema.decodeUnknownSync(ArcRunActionInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
 
 export function clientRpcRequiredScopes(
@@ -94,6 +102,14 @@ export function clientRpcRequiredScopes(
   }
   if (method === WS_METHODS.gitRunStackedAction && input !== undefined) {
     const payload = decodeStackedAction(input);
+    if (
+      payload.threadId !== undefined &&
+      (payload.action === "create_pr" || payload.action === "commit_push_pr")
+    )
+      return [AuthSourceControlWriteScope, AuthOrchestrationReadScope];
+  }
+  if (method === WS_METHODS.arcRunAction && input !== undefined) {
+    const payload = decodeArcAction(input);
     if (
       payload.threadId !== undefined &&
       (payload.action === "create_pr" || payload.action === "commit_push_pr")

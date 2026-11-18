@@ -8,6 +8,7 @@ import * as storage from "../hooks/useLocalStorage";
 import * as threadActions from "../lib/chatThreadActions";
 import * as entities from "../state/entities";
 import * as projectsState from "../state/projects";
+import { PROJECT_PROFILE_VIEW_KEY } from "../projectProfileView";
 import { Atom } from "effect/reactivity";
 import type { Project } from "../types";
 import { installChatRouteCommands } from "./chatRouteCommands";
@@ -44,7 +45,11 @@ describe("new thread commands", () => {
     using _ready = vi
       .spyOn(projectsState, "defaultProjectFallbackReadyAtom")
       .mockReturnValue(Atom.make(true));
-    using storedProject = vi.spyOn(storage, "getLocalStorageItem").mockReturnValue("local:active");
+    using storedProject = vi
+      .spyOn(storage, "getLocalStorageItem")
+      .mockImplementation(
+        (key) => (key === PROJECT_PROFILE_VIEW_KEY ? "all" : "local:active") as never,
+      );
     using openPicker = vi.spyOn(commandPalette, "openCommandPalette").mockImplementation(() => {});
     using startLocal = vi.spyOn(threadActions, "startNewThreadFromContext").mockResolvedValue(true);
     using register = vi.spyOn(dispatcher, "registerCommands").mockReturnValue(() => {});
@@ -57,7 +62,9 @@ describe("new thread commands", () => {
       stopPropagation: vi.fn(),
     } as unknown as KeyboardEvent;
 
-    storedProject.mockReturnValue("local:idle");
+    storedProject.mockImplementation(
+      (key) => (key === PROJECT_PROFILE_VIEW_KEY ? "all" : "local:idle") as never,
+    );
     commands[scenario.command]!(event);
 
     if (scenario.picker) {
@@ -71,5 +78,38 @@ describe("new thread commands", () => {
         projectId: scenario.count === 1 ? "active" : "idle",
       });
     }
+  });
+
+  it("keeps every new-chat shortcut inside the selected profile", () => {
+    using _settings = vi
+      .spyOn(settings, "getClientSettings")
+      .mockReturnValue(DEFAULT_CLIENT_SETTINGS);
+    using _projects = vi.spyOn(entities, "readProjects").mockReturnValue([project("active")]);
+    using _ready = vi
+      .spyOn(projectsState, "defaultProjectFallbackReadyAtom")
+      .mockReturnValue(Atom.make(true));
+    using stored = vi
+      .spyOn(storage, "getLocalStorageItem")
+      .mockImplementation(
+        (key) => (key === PROJECT_PROFILE_VIEW_KEY ? "work" : "local:active") as never,
+      );
+    using openPicker = vi.spyOn(commandPalette, "openCommandPalette").mockImplementation(() => {});
+    using startLocal = vi.spyOn(threadActions, "startNewThreadFromContext").mockResolvedValue(true);
+    using register = vi.spyOn(dispatcher, "registerCommands").mockReturnValue(() => {});
+    const router = { state: { matches: [] } } as unknown as AnyRouter;
+    using stack = new DisposableStack();
+    stack.defer(installChatRouteCommands(router));
+    const commands = register.mock.calls[0]![0];
+    const event = {
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as KeyboardEvent;
+
+    for (const command of ["chat.new", "chat.newLocal", "chat.newWithoutProject"] as const) {
+      commands[command]!(event);
+      expect(openPicker).toHaveBeenLastCalledWith({ open: "new-thread-in" });
+    }
+    expect(startLocal).not.toHaveBeenCalled();
+    expect(stored).toHaveBeenCalledWith(PROJECT_PROFILE_VIEW_KEY, expect.anything());
   });
 });

@@ -1,4 +1,5 @@
 import * as AzureDevOps from "@t3tools/source-control-azure-devops/shared/definition";
+import * as Arcanum from "@t3tools/source-control-arcanum/shared/definition";
 import * as Bitbucket from "@t3tools/source-control-bitbucket/shared/definition";
 import { makeSourceControlDefinitionRegistry } from "@t3tools/source-control-core/shared/definition";
 import * as CursorOrigin from "@t3tools/source-control-cursor-origin/shared/definition";
@@ -8,6 +9,8 @@ import * as GitHub from "@t3tools/source-control-github/shared/definition";
 import * as GitLab from "@t3tools/source-control-gitlab/shared/definition";
 
 export { canonicalizePullRequestUrl as canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-gitcafe/shared/definition";
+
+const arcanumDefinition = Arcanum.definition;
 
 /**
  * GitHub comes first to preserve the client default for repositories with an unknown host.
@@ -24,6 +27,7 @@ export const builtInSourceControlDefinitions = makeSourceControlDefinitionRegist
     Forgejo.definition,
     Bitbucket.definition,
     AzureDevOps.definition,
+    arcanumDefinition,
   ],
   {
     claimChangeRequestUrlsFirst: [
@@ -39,6 +43,7 @@ export const builtInSourceControlDefinitions = makeSourceControlDefinitionRegist
       GitLab.definition.kind,
       AzureDevOps.definition.kind,
       Bitbucket.definition.kind,
+      Arcanum.definition.kind,
     ],
   },
 );

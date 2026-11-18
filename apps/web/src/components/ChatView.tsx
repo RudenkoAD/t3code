@@ -531,6 +531,10 @@ export default function ChatView(props: ChatViewProps) {
   const activeProviderThread = serverProjection?.providerThreads.find(
     (thread) => thread.id === serverProjection.thread.activeProviderThreadId,
   );
+  const hasCodexProviderThread =
+    activeProviderThread?.driver === "codex" &&
+    activeProviderThread.providerSessionId !== null &&
+    activeProviderThread.nativeThreadRef !== null;
   const activeThreadLiveTokenUsage = latestProviderTurnTokenUsage(
     serverProjection?.providerTurns ?? [],
     serverProjection,
@@ -3588,6 +3592,7 @@ export default function ChatView(props: ChatViewProps) {
                             ) : null}
                             {!composerMounted ? null : (
                               <ChatComposer
+                                hasCodexProviderThread={hasCodexProviderThread}
                                 canOperateThread={canOperateThread}
                                 reportedModelSelection={reportedModelSelection}
                                 multipleModelSelections={multipleModelSelections}
@@ -3763,6 +3768,9 @@ export default function ChatView(props: ChatViewProps) {
                                   worktreePath={activeThread.worktreePath}
                                   isServerThread={isServerThread}
                                   showGitControls={isGitRepo}
+                                  {...(gitStatusQuery.data?.vcsKind
+                                    ? { vcsKind: gitStatusQuery.data.vcsKind }
+                                    : {})}
                                   {...(routeKind === "draft" && draftId ? { draftId } : {})}
                                   onEnvModeChange={onEnvModeChangeStable}
                                   startFromOrigin={startFromOrigin}
@@ -3880,6 +3888,9 @@ export default function ChatView(props: ChatViewProps) {
                   gitCwd={gitCwd}
                   workspaceMutationId={workspaceMutationId}
                   isGitRepo={isGitRepo}
+                  {...(gitStatusQuery.data?.vcsKind
+                    ? { vcsKind: gitStatusQuery.data.vcsKind }
+                    : {})}
                   envLocked={envLocked}
                   availableEnvironments={logicalProjectEnvironments}
                   autoEnvironmentLabel={autoEnvironmentLabel}

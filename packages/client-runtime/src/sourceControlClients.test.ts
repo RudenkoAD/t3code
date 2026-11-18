@@ -118,6 +118,17 @@ describe("sourceControlClients.parseChangeRequestUrl", () => {
     });
   });
 
+  it("reads Arcanum reviews with their host, repository, and numeric identity", () => {
+    const url = "https://a.yandex-team.ru/review/17236921";
+    expect(parse(url)).toEqual({
+      host: "a.yandex-team.ru",
+      repository: "arc_vcs",
+      number: 17236921,
+    });
+    expect(kindOf(url)).toBe("arcanum");
+    expect(sourceControlClients.isSameChangeRequest(url, `${url}/details?tab=checks`)).toBe(true);
+  });
+
   it("reads Azure DevOps Server links and keeps servers on different ports distinct", () => {
     for (const host of ["scm.example.test", "git.cafe", "code.bitbucket.example.test"]) {
       const repository = "tfs/collection/project/_git/repo";
@@ -181,6 +192,10 @@ describe("sourceControlClients.parseChangeRequestUrl", () => {
       "https://scm.example.test/tfs/Collection/Project/_git/Repo/pullrequest/0",
       "https://scm.example.test/tfs/Collection/Project/_git/Repo/pullrequest/9007199254740992",
       "ftp://scm.example.test/tfs/Collection/Project/_git/Repo/pullrequest/123",
+      "https://a.yandex-team.ru/review/0",
+      "https://a.yandex-team.ru/review/9007199254740992",
+      "https://a.yandex-team.ru.example/review/17236921",
+      "https://a.yandex-team.ru/reviews/17236921",
       "javascript:alert(1)//github.com/t3tools/t3code/pull/1",
       "not a url",
     ]) {

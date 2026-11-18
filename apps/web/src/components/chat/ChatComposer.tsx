@@ -138,6 +138,7 @@ import { useDictationShortcut } from "../../speech/useDictationShortcut";
 import { useDictationSubmissionShortcut } from "../../speech/useDictationSubmissionShortcut";
 import { useEnvironmentSpeechInput } from "../../speech/useEnvironmentSpeechInput";
 import { ComposerSpeechButton, ComposerSpeechRecordingPill } from "./ComposerSpeechButton";
+import { CodexRealtimeButton } from "./CodexRealtimeButton";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import { shortcutLabelForCommand } from "../../keybindings";
 import {
@@ -253,6 +254,8 @@ import {
   type ComposerDispatchMode,
 } from "@t3tools/client-runtime/state/composer-dispatch";
 import {
+  filterDeniedProviderSkills,
+  filterDeniedSkillSlashCommands,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
@@ -346,6 +349,7 @@ export interface ChatComposerHandle {
 }
 
 export interface ChatComposerProps {
+  hasCodexProviderThread?: boolean;
   composerDraftTarget: ScopedThreadRef | DraftId;
   environmentId: EnvironmentId;
   canOperateThread: boolean;
@@ -929,12 +933,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         (multipleModelSelections === null ? providerSendBlockReason : null)));
   const isSendDisabled = sendDisabledReason !== null;
   const selectedProviderStatus = selectedProviderEntry?.snapshot ?? null;
-  const selectedProviderSkills = selectedProviderStatus
+  const composerProjectId = activeProjectId ?? activeThread?.projectId ?? null;
+  const cwdProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
     : NO_PROVIDER_SKILLS;
-  const selectedProviderSlashCommands = selectedProviderStatus
+  const cwdProviderSlashCommands = selectedProviderStatus
     ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd)
     : NO_PROVIDER_SLASH_COMMANDS;
+  const projectToolProvider =
+    selectedProvider === "codex" ? "codex" : selectedProvider === "claudeAgent" ? "claude" : null;
+  const selectedProviderSkills = filterDeniedProviderSkills(
+    cwdProviderSkills,
+    settings,
+    composerProjectId,
+    projectToolProvider,
+  );
+  const selectedProviderSlashCommands = filterDeniedSkillSlashCommands(
+    cwdProviderSlashCommands,
+    cwdProviderSkills,
+    settings,
+    composerProjectId,
+    projectToolProvider,
+  );
   const { refresh: refreshWorkspaceSnapshotOnTyping, scanning: workspaceSkillsScanning } =
     useProviderWorkspaceSnapshotRefresh({
       environmentId,
@@ -3698,6 +3718,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     keepFullHistory={props.keepFullHistory}
                     onToggleKeepFullHistory={props.onToggleKeepFullHistory}
                   >
+                    {activeThreadId &&
+                    props.hasCodexProviderThread === true &&
+                    selectedProvider === "codex" ? (
+                      <CodexRealtimeButton
+                        key={`${environmentId}:${activeThreadId}`}
+                        environmentId={environmentId}
+                        threadId={activeThreadId}
+                        disabled={
+                          !canOperateThread ||
+                          environmentUnavailable !== null ||
+                          speechInput.state.phase !== "idle"
+                        }
+                      />
+                    ) : null}
                     {speechInput.available ? (
                       <>
                         <ComposerSpeechRecordingPill

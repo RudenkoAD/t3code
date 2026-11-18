@@ -472,3 +472,64 @@ it.effect("denies manual cleanup before the handler without settings permission"
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
 );
+
+it.effect("requires provider-management permission to toggle a profile MCP server", () =>
+  Effect.gen(function* () {
+    const method = WS_METHODS.profileSetMcpServerEnabled;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof method> => tag !== method,
+      ),
+    );
+    let handled = false;
+    const response = {
+      scope: "work" as const,
+      codex: { status: "configured" as const, servers: [{ name: "docs", enabled: false }] },
+      claude: { status: "missing" as const, servers: [] },
+    };
+    const handlers = group.toLayerHandler(method, () =>
+      Effect.sync(() => {
+        handled = true;
+        return response;
+      }),
+    );
+    const readOnly = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthOrchestrationReadScope]))),
+    );
+    expect(
+      yield* readOnly[method]({
+        scope: "work",
+        provider: "codex",
+        name: "docs",
+        enabled: false,
+      }).pipe(Effect.flip),
+    ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+    expect(handled).toBe(false);
+
+    const settingsOnly = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthSettingsWriteScope]))),
+    );
+    expect(
+      yield* settingsOnly[method]({
+        scope: "work",
+        provider: "codex",
+        name: "docs",
+        enabled: false,
+      }).pipe(Effect.flip),
+    ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+    expect(handled).toBe(false);
+
+    const providerAdmin = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthProvidersManageScope]))),
+    );
+    expect(
+      yield* providerAdmin[method]({
+        scope: "work",
+        provider: "codex",
+        name: "docs",
+        enabled: false,
+      }),
+    ).toEqual(response);
+    expect(handled).toBe(true);
+  }).pipe(Effect.scoped),
+);

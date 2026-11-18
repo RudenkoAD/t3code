@@ -12,6 +12,7 @@ import {
   type ContextMenuItem,
   type EnvironmentId,
   type VcsRef,
+  type VcsDriverKind,
   type ThreadId,
 } from "@t3tools/contracts";
 import { GitBranchIcon } from "lucide-react";
@@ -79,6 +80,7 @@ interface BranchToolbarBranchSelectorProps {
   threadId: ThreadId;
   draftId?: DraftId;
   envLocked: boolean;
+  vcsKind?: VcsDriverKind;
   effectiveEnvModeOverride?: "local" | "worktree";
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (refName: string | null) => void;
@@ -103,6 +105,7 @@ export function BranchToolbarBranchSelector({
   threadId,
   draftId,
   envLocked,
+  vcsKind,
   effectiveEnvModeOverride,
   activeThreadBranchOverride,
   onActiveThreadBranchOverrideChange,
@@ -160,7 +163,6 @@ export function BranchToolbarBranchSelector({
   const branchCwd = activeWorktreePath ?? activeProjectCwd;
   const hasServerThread = serverThread !== null;
   const canUpdateThreadBranch = !hasServerThread || canOperateThread;
-  const canChangeThreadBranch = canWriteSourceControl && canUpdateThreadBranch;
   const effectiveEnvMode =
     effectiveEnvModeOverride ??
     resolveEffectiveEnvMode({
@@ -245,6 +247,8 @@ export function BranchToolbarBranchSelector({
           input: { cwd: branchCwd },
         }),
   );
+  const isArcVcs = vcsKind === "arc" || branchStatusQuery.data?.vcsKind === "arc";
+  const canChangeThreadBranch = !isArcVcs && canWriteSourceControl && canUpdateThreadBranch;
   const projectStatusQuery = useEnvironmentQuery(
     activeProjectCwd === null
       ? null
@@ -764,7 +768,7 @@ export function BranchToolbarBranchSelector({
               )
             }
             className="min-w-0 max-w-full active:scale-100"
-            disabled={isInitialBranchesLoadPending || isBranchActionPending}
+            disabled={isArcVcs || isInitialBranchesLoadPending || isBranchActionPending}
           >
             <GitBranchIcon
               className={cn(

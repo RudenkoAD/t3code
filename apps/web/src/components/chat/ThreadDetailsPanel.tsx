@@ -5,6 +5,7 @@ import type {
   ProjectScript,
   ResolvedKeybindingsConfig,
   ThreadId,
+  VcsDriverKind,
 } from "@t3tools/contracts";
 
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -69,6 +70,7 @@ interface ThreadDetailsPanelProps extends Pick<
   gitCwd: string | null;
   workspaceMutationId: string | null;
   isGitRepo: boolean;
+  vcsKind?: VcsDriverKind;
   envLocked: boolean;
   availableEnvironments: readonly EnvironmentOption[];
   autoEnvironmentLabel?: string | undefined;
@@ -112,6 +114,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
     !isScratchProject(project, serverConfig.scratchWorkspaceRoot);
   const branchToolbarProps = {
     showGitControls: props.isGitRepo,
+    ...(props.vcsKind ? { vcsKind: props.vcsKind } : {}),
     environmentId: props.environmentId,
     threadId: props.threadId,
     projectId: props.projectId,

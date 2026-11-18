@@ -18,6 +18,9 @@ import {
   TurnItemId,
   WS_METHODS,
   WsRpcGroup,
+  type VcsStatusLocalResult,
+  type VcsStatusRemoteResult,
+  type VcsStatusResult,
   type VcsStatusStreamEvent,
   type ModelSelection,
   type OrchestrationProjectShell,
@@ -220,6 +223,7 @@ export interface FakeThread {
   /** Makes this an older settled thread the shell leaves out; only its family read returns it. */
   readonly olderSettled?: true;
   readonly id: ThreadId;
+  readonly branch?: string;
   readonly title: string;
   /** Defaults to GPT-5.4 on Codex. */
   readonly modelSelection?: ModelSelection;
@@ -233,8 +237,13 @@ export interface FakeThread {
 export function threadWithHistory(
   name: string,
   turns: number,
-  modelSelection: ModelSelection = MODEL,
+  modelSelectionOrBranch: ModelSelection | string = MODEL,
+  branchArgument?: string,
 ): FakeThread {
+  const modelSelection =
+    typeof modelSelectionOrBranch === "string" ? MODEL : modelSelectionOrBranch;
+  const branch =
+    typeof modelSelectionOrBranch === "string" ? modelSelectionOrBranch : branchArgument;
   const id = ThreadId.make(name);
   const runs: OrchestrationV2Run[] = [];
   const items: OrchestrationV2TurnItem[] = [];
@@ -253,7 +262,14 @@ export function threadWithHistory(
       ),
     );
   }
-  return { id, title: `Thread ${name}`, modelSelection, runs, items };
+  return {
+    id,
+    title: `Thread ${name}`,
+    modelSelection,
+    runs,
+    items,
+    ...(branch ? { branch } : {}),
+  };
 }
 
 function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
@@ -267,7 +283,7 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     modelSelection,
     runtimeMode: "full-access",
     interactionMode: "default",
-    branch: "main",
+    branch: thread.branch ?? "main",
     worktreePath: null,
     activeProviderThreadId: thread.providerThreads?.[0]?.id ?? null,
     lineage: {
@@ -370,6 +386,7 @@ let pendingDispatches: Array<{
 }> = [];
 let sequence = 1;
 let vcsStatusSubscriber: Queue.Queue<VcsStatusStreamEvent> | null = null;
+let initialVcsStatus: VcsStatusResult | null = null;
 
 const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>) => () => void) =>
   Stream.unwrap(
@@ -446,12 +463,46 @@ const handlers: Record<string, (input: never) => unknown> = {
     });
   },
   [WS_METHODS.subscribeVcsStatus]: () =>
-    subscribe<VcsStatusStreamEvent>([], (queue) => {
-      vcsStatusSubscriber = queue;
-      return () => {
-        if (vcsStatusSubscriber === queue) vcsStatusSubscriber = null;
-      };
-    }),
+    subscribe<VcsStatusStreamEvent>(
+      initialVcsStatus === null
+        ? []
+        : [
+            {
+              _tag: "snapshot",
+              local: {
+                vcsKind: initialVcsStatus.vcsKind,
+                isRepo: initialVcsStatus.isRepo,
+                sourceControlProvider: initialVcsStatus.sourceControlProvider,
+                hasPrimaryRemote: initialVcsStatus.hasPrimaryRemote,
+                isDefaultRef: initialVcsStatus.isDefaultRef,
+                refName: initialVcsStatus.refName,
+                hasWorkingTreeChanges: initialVcsStatus.hasWorkingTreeChanges,
+                workingTree: initialVcsStatus.workingTree,
+                ...(initialVcsStatus.branchChanges
+                  ? { branchChanges: initialVcsStatus.branchChanges }
+                  : {}),
+              } satisfies VcsStatusLocalResult,
+              remote: {
+                hasUpstream: initialVcsStatus.hasUpstream,
+                aheadCount: initialVcsStatus.aheadCount,
+                behindCount: initialVcsStatus.behindCount,
+                ...(initialVcsStatus.aheadOfDefaultCount !== undefined
+                  ? { aheadOfDefaultCount: initialVcsStatus.aheadOfDefaultCount }
+                  : {}),
+                ...(initialVcsStatus.trackingCountsKnown !== undefined
+                  ? { trackingCountsKnown: initialVcsStatus.trackingCountsKnown }
+                  : {}),
+                pr: initialVcsStatus.pr,
+              } satisfies VcsStatusRemoteResult,
+            },
+          ],
+      (queue) => {
+        vcsStatusSubscriber = queue;
+        return () => {
+          if (vcsStatusSubscriber === queue) vcsStatusSubscriber = null;
+        };
+      },
+    ),
   [WS_METHODS.subscribeServerConfig]: () =>
     subscribe([{ version: 1 as const, type: "snapshot" as const, config: serverConfig() }]),
 };
@@ -511,6 +562,7 @@ export function installFakeEnvironment(
     /** Commands left unanswered even when accepting, until `rejectPendingCommand`. */
     readonly holdCommand?: (command: OrchestrationV2Command) => boolean;
     readonly providers?: ReadonlyArray<unknown>;
+    readonly vcsStatus?: VcsStatusResult;
   },
 ): Disposable {
   threads = fixtures;
@@ -518,6 +570,8 @@ export function installFakeEnvironment(
   dispatched = [];
   acceptCommands = options?.acceptCommands === true;
   holdCommand = options?.holdCommand ?? (() => false);
+  pendingDispatches = [];
+  initialVcsStatus = options?.vcsStatus ?? null;
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.origin !== window.location.origin) return realFetch(input, init);
@@ -544,6 +598,8 @@ export function installFakeEnvironment(
       acceptCommands = false;
       holdCommand = () => false;
       pendingDispatches = [];
+      initialVcsStatus = null;
+      vcsStatusSubscriber = null;
     },
   };
 }

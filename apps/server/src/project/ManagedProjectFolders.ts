@@ -2,6 +2,7 @@ import {
   CommandId,
   GitCommandError,
   type GitManagerServiceError,
+  type ProjectProfile,
   ProjectId,
   type ThreadId,
   VcsProcessSpawnError,
@@ -117,7 +118,10 @@ export class ManagedProjectFolders extends Context.Service<
     }) => Effect.Effect<Option.Option<string>, ScratchFolderError>;
     readonly namedProjectsRoot: string;
     /** Removes failed/cancelled creations' folders only while no project owns them. */
-    readonly createNamedProject: (input: { readonly name: string }) => Effect.Effect<
+    readonly createNamedProject: (input: {
+      readonly name: string;
+      readonly profile?: ProjectProfile;
+    }) => Effect.Effect<
       {
         readonly projectId: ProjectId;
         readonly workspaceRoot: string;
@@ -480,6 +484,7 @@ const make = Effect.gen(function* () {
         commandId: CommandId.make(`named-project:${id}`),
         projectId: ProjectId.make(id),
         title: input.name,
+        ...(input.profile === undefined ? {} : { profile: input.profile }),
         workspaceRoot,
       })
       .pipe(

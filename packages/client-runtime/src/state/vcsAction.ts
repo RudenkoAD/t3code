@@ -3,9 +3,9 @@ import {
   type EnvironmentId as EnvironmentIdType,
   GitActionProgressPhase,
   type GitActionProgressEvent,
-  type GitRunStackedActionInput,
   type GitRunStackedActionResult,
   GitStackedAction,
+  type VcsDriverKind,
   type ThreadId,
   type ProjectId,
   WS_METHODS,
@@ -76,6 +76,7 @@ export interface BeginVcsActionInput {
 export interface RunVcsStackedActionInput {
   readonly actionId: string;
   readonly action: GitStackedAction;
+  readonly vcsKind?: VcsDriverKind;
   readonly commitMessage?: string;
   readonly featureBranch?: boolean;
   readonly filePaths?: ReadonlyArray<string>;
@@ -465,12 +466,11 @@ export function createVcsActionManager<R, E>(
           }),
         );
 
-        const rpcInput: GitRunStackedActionInput = {
+        const rpcInput = {
           actionId: transportActionId,
           cwd: target.cwd,
           action: input.action,
           ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
-          ...(input.featureBranch ? { featureBranch: true } : {}),
           ...(input.filePaths?.length ? { filePaths: [...input.filePaths] } : {}),
           ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
           ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
@@ -481,11 +481,13 @@ export function createVcsActionManager<R, E>(
             registry.set(stateAtom, EMPTY_VCS_ACTION_STATE);
           }
         });
+        const isArc = input.vcsKind === "arc";
+        const actionStream = runStreamGuarded(
+          isArc ? WS_METHODS.arcRunAction : WS_METHODS.gitRunStackedAction,
+          { ...rpcInput, ...(!isArc && input.featureBranch ? { featureBranch: true } : {}) },
+        );
         return yield* consumeVcsActionProgress(
-          runStreamInEnvironment(
-            target.environmentId,
-            runStreamGuarded(WS_METHODS.gitRunStackedAction, rpcInput),
-          ),
+          runStreamInEnvironment(target.environmentId, actionStream),
           {
             target,
             transportActionId,

@@ -1,6 +1,10 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { CodexSettings, type ProviderReplayTranscript } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  ProviderInstanceId,
+  type ProviderReplayTranscript,
+} from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexError from "effect-codex-app-server/errors";
 import * as CodexReplay from "effect-codex-app-server/replay";
@@ -98,6 +102,7 @@ function metadataFromTranscript(transcript: ProviderReplayTranscript): {
 export function layer(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
+  readonly additionalInstanceIds?: ReadonlyArray<ProviderInstanceId>;
 }) {
   const layerReplay =
     input.driver === undefined
@@ -126,14 +131,19 @@ export function layer(input: {
     ServerConfig.ServerConfig,
     makeReplayServerConfig(input.transcript.scenario).pipe(Effect.orDie),
   ).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+  const instanceIds = Array.from(
+    new Set([CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID, ...(input.additionalInstanceIds ?? [])]),
+  );
   const layerRegistry = ProviderAdapterRegistry.layerFromAdaptersEffect(
-    CodexAdapterV2.createCodexAdapterV2({
-      instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
-      displayName: undefined,
-      environment: [],
-      enabled: true,
-      config: DEFAULT_CODEX_SETTINGS,
-    }).pipe(Effect.map((adapter) => [adapter])),
+    Effect.forEach(instanceIds, (instanceId) =>
+      CodexAdapterV2.createCodexAdapterV2({
+        instanceId,
+        displayName: undefined,
+        environment: [],
+        enabled: true,
+        config: DEFAULT_CODEX_SETTINGS,
+      }),
+    ),
   ).pipe(
     Layer.provide(
       Layer.mergeAll(

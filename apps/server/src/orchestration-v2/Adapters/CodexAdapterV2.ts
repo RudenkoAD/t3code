@@ -1,6 +1,7 @@
 import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import { buildCodexThreadPolicyConfig } from "../../provider/codexProjectPolicy.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -94,6 +95,7 @@ import * as Function from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -1428,9 +1430,35 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 const CODEX_T3_DIRECT_MCP_SERVER = "t3-code-direct";
 const CODEX_DIRECT_ONLY_T3_TOOL = "t3_thread_wait";
 
+class CodexNativeToolPolicyResolutionError extends Schema.TaggedError<CodexNativeToolPolicyResolutionError>()(
+  "CodexNativeToolPolicyResolutionError",
+  {},
+) {
+  override get message(): string {
+    return "Codex native skills could not be resolved for project tool policy.";
+  }
+}
+
+function sameNativeToolPolicy(
+  left: McpProviderSession.McpProviderSessionConfig["nativeToolPolicy"],
+  right: McpProviderSession.McpProviderSessionConfig["nativeToolPolicy"],
+): boolean {
+  const sameNames = (a: ReadonlyArray<string> = [], b: ReadonlyArray<string> = []) =>
+    a.length === b.length && a.every((name, index) => name === b[index]);
+  return (
+    sameNames(left?.deniedMcpServers, right?.deniedMcpServers) &&
+    sameNames(left?.deniedSkills, right?.deniedSkills)
+  );
+}
+
 function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+  readonly nativeToolPolicyConfig?: {
+    readonly mcpServers?: Readonly<Record<string, Schema.Json>>;
+    readonly nativeSkills?: ReadonlyArray<{ readonly path: string; readonly enabled: boolean }>;
+    readonly deniedSkillPaths?: ReadonlyArray<string>;
+  };
   readonly modelSelection?: { readonly model: string };
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
@@ -1447,31 +1475,107 @@ function codexThreadRuntimeParams(input: {
           tool_timeout_sec: CODEX_T3_MCP_TOOL_TIMEOUT_SEC,
           http_headers: { Authorization: mcpSession.authorizationHeader },
         };
+  const config: Record<string, Schema.Json> = {
+    ...CODEX_THREAD_CONFIG,
+    ...(input.nativeToolPolicyConfig?.mcpServers === undefined
+      ? {}
+      : { mcp_servers: input.nativeToolPolicyConfig.mcpServers }),
+    // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
+    ...(input.threadId === null
+      ? {}
+      : { [`shell_environment_policy.set.${PortScanner.AGENT_THREAD_ENV}`]: input.threadId }),
+    ...(t3Server === undefined
+      ? {}
+      : {
+          // Override only T3's servers so launch-argument MCP servers survive.
+          "mcp_servers.t3-code": { ...t3Server, disabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL] },
+          // Code Mode runs a blocking wait as a nested call, and the model keeps working
+          // around it. A second, direct-only registration makes it a plain tool call.
+          [`mcp_servers.${CODEX_T3_DIRECT_MCP_SERVER}`]: {
+            ...t3Server,
+            enabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL],
+            omit_tools_from: ["code_mode", "deferred"],
+          },
+        }),
+  };
+  const withSkillPolicy =
+    input.nativeToolPolicyConfig?.nativeSkills === undefined
+      ? config
+      : buildCodexThreadPolicyConfig({
+          baseConfig: config,
+          nativeSkills: input.nativeToolPolicyConfig.nativeSkills,
+          deniedSkillPaths: input.nativeToolPolicyConfig.deniedSkillPaths ?? [],
+        });
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
-    config: {
-      ...CODEX_THREAD_CONFIG,
-      // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
-      ...(input.threadId === null
-        ? {}
-        : { [`shell_environment_policy.set.${PortScanner.AGENT_THREAD_ENV}`]: input.threadId }),
-      ...(t3Server === undefined
-        ? {}
-        : {
-            // Override only T3's servers so launch-argument MCP servers survive.
-            "mcp_servers.t3-code": { ...t3Server, disabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL] },
-            // Code Mode runs a blocking wait as a nested call, and the model keeps working
-            // around it. A second, direct-only registration makes it a plain tool call.
-            [`mcp_servers.${CODEX_T3_DIRECT_MCP_SERVER}`]: {
-              ...t3Server,
-              enabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL],
-              omit_tools_from: ["code_mode", "deferred"],
-            },
-          }),
-    },
+    config: withSkillPolicy as Readonly<Record<string, Schema.Json>>,
   };
 }
+
+/**
+ * Codex exposes per-thread config overrides for MCP servers and skill config. Resolve skill
+ * paths from the same app-server/home/cwd as the target thread so the override remains scoped
+ * to this thread and never writes to a user's shared config.
+ */
+const codexNativeToolPolicyConfig = Effect.fn("CodexAdapterV2.nativeToolPolicyConfig")(
+  function* (input: {
+    readonly client: CodexClient.CodexAppServerClient["Service"];
+    readonly cwd: string | null | undefined;
+    readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+    readonly refreshSkills?: boolean;
+  }) {
+    const policy = input.mcpSession?.nativeToolPolicy;
+    const deniedMcpServers = policy?.deniedMcpServers ?? [];
+    const deniedSkills = policy?.deniedSkills ?? [];
+    if (
+      deniedMcpServers.length === 0 &&
+      deniedSkills.length === 0 &&
+      input.refreshSkills !== true
+    ) {
+      return undefined;
+    }
+
+    // These names are reserved for T3's own service and remain governed by T3 tool-access
+    // settings, not profile-native MCP policy.
+    const deniedNativeMcpServers = deniedMcpServers.filter(
+      (name) => name !== "t3-code" && name !== CODEX_T3_DIRECT_MCP_SERVER,
+    );
+    const mcpServers =
+      deniedNativeMcpServers.length === 0
+        ? undefined
+        : Object.fromEntries(deniedNativeMcpServers.map((name) => [name, { enabled: false }]));
+
+    let nativeSkills:
+      | ReadonlyArray<{ readonly path: string; readonly enabled: boolean }>
+      | undefined;
+    let deniedSkillPaths: ReadonlyArray<string> = [];
+    if ((deniedSkills.length > 0 || input.refreshSkills === true) && input.cwd) {
+      const response = yield* input.client.request("skills/list", { cwds: [input.cwd] });
+      const skillEntry =
+        response.data.find((entry) => entry.cwd === input.cwd) ??
+        (response.data.length === 1 ? response.data[0] : undefined);
+      if (skillEntry === undefined || skillEntry.errors.length > 0) {
+        return yield* new CodexNativeToolPolicyResolutionError();
+      }
+      const skills = skillEntry.skills;
+      const deniedSkillNames = new Set(deniedSkills);
+      nativeSkills = skills.map(({ path, enabled }) => ({ path, enabled }));
+      deniedSkillPaths = Array.from(
+        new Set(
+          skills.filter((skill) => deniedSkillNames.has(skill.name)).map((skill) => skill.path),
+        ),
+      );
+    } else if (deniedSkills.length > 0 || input.refreshSkills === true) {
+      return yield* new CodexNativeToolPolicyResolutionError();
+    }
+    if (mcpServers === undefined && nativeSkills === undefined) return undefined;
+    return {
+      ...(mcpServers === undefined ? {} : { mcpServers }),
+      ...(nativeSkills === undefined ? {} : { nativeSkills, deniedSkillPaths }),
+    };
+  },
+);
 
 const decodeCodexResumeMetadata = Schema.decodeUnknownEffect(
   Schema.Struct({ thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }) }),
@@ -1783,7 +1887,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
-        const client = yield* clientFactory.open({
+        const transport = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
@@ -1791,6 +1895,52 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           settings: resolvedRuntime?.config ?? adapterOptions.settings,
           environment: resolvedRuntime?.environment ?? adapterOptions.environment,
         });
+        const pendingVoiceTurns = new Map<
+          string,
+          {
+            readonly threadId: string;
+            readonly startedAt: DateTime.Utc;
+            readonly adopted: Deferred.Deferred<void>;
+            readonly notifications: Array<Effect.Effect<void, CodexErrors.CodexAppServerError>>;
+          }
+        >();
+        // Startup may need protocol responses while T3 attaches the new run. Buffer only this turn's notifications.
+        const client: typeof transport = {
+          ...transport,
+          handleServerNotification: (method, handler) =>
+            transport.handleServerNotification(method, (payload) => {
+              if (pendingVoiceTurns.size > 0) {
+                const turn = "turn" in payload ? payload.turn : undefined;
+                const id =
+                  "turnId" in payload
+                    ? payload.turnId
+                    : turn && typeof turn === "object" && "id" in turn
+                      ? turn.id
+                      : undefined;
+                const pending = typeof id === "string" ? pendingVoiceTurns.get(id) : undefined;
+                if (pending) {
+                  pending.notifications.push(Effect.suspend(() => handler(payload)));
+                  return Effect.void;
+                }
+              }
+              return handler(payload);
+            }),
+        };
+        const loadedNativeThreads = new Set<string>();
+        const appliedNativeToolPolicyByThread = new Map<
+          string,
+          McpProviderSession.McpProviderSessionConfig["nativeToolPolicy"]
+        >();
+        const nativeThreadCwdByThread = new Map<string, string | null>();
+        const markNativeThreadLoaded = (
+          nativeThreadId: string,
+          mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+          cwd?: string | null,
+        ) => {
+          appliedNativeToolPolicyByThread.set(nativeThreadId, mcpSession?.nativeToolPolicy);
+          if (cwd !== undefined) nativeThreadCwdByThread.set(nativeThreadId, cwd);
+          loadedNativeThreads.add(nativeThreadId);
+        };
         const additionalContextByThread = yield* Ref.make(
           new Map<
             string,
@@ -1890,6 +2040,74 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ProviderAdapter.ProviderAdapterV2Event,
           ProviderAdapter.ProviderAdapterEventStreamError
         >();
+        const realtimeCalls = yield* Ref.make(
+          new Map<
+            string,
+            {
+              readonly callId: string;
+              readonly answer: Deferred.Deferred<
+                string,
+                ProviderAdapter.ProviderAdapterProtocolError
+              >;
+              readonly onTurnStarted: (input: {
+                readonly nativeTurnId: string;
+                readonly text: string;
+              }) => Effect.Effect<void, Error>;
+              readonly transcript: string | undefined;
+              readonly stopping?: true;
+            }
+          >(),
+        );
+        const clearRealtimeCall = Effect.fn("CodexAdapterV2.clearRealtimeCall")(function* (
+          nativeThreadId: string,
+          callId: string,
+        ) {
+          const isCurrent = (yield* Ref.get(realtimeCalls)).get(nativeThreadId)?.callId === callId;
+          if (!isCurrent) return;
+          yield* Ref.update(realtimeCalls, (current) => {
+            const updated = new Map(current);
+            updated.delete(nativeThreadId);
+            return updated;
+          });
+        });
+        const claimRealtimeStop = Effect.fn("CodexAdapterV2.claimRealtimeStop")(function* (
+          nativeThreadId: string,
+          callId: string,
+        ) {
+          return yield* Ref.modify(realtimeCalls, (current) => {
+            const call = current.get(nativeThreadId);
+            if (call?.callId !== callId || call.stopping === true) return [false, current];
+            const updated = new Map(current).set(nativeThreadId, { ...call, stopping: true });
+            return [true, updated];
+          });
+        });
+        const failRealtimeHandshake = Effect.fn("CodexAdapterV2.failRealtimeHandshake")(function* (
+          nativeThreadId: string,
+        ) {
+          const active = (yield* Ref.get(realtimeCalls)).get(nativeThreadId);
+          if (active !== undefined) {
+            yield* Deferred.fail(
+              active.answer,
+              new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CODEX_PROVIDER,
+                detail: "Codex realtime session closed before SDP negotiation completed",
+              }),
+            );
+          }
+          if (active !== undefined && active.stopping !== true) {
+            yield* clearRealtimeCall(nativeThreadId, active.callId);
+          }
+        });
+        const cancelRealtimeCall = Effect.fn("CodexAdapterV2.cancelRealtimeCall")(function* (
+          nativeThreadId: string,
+          callId: string,
+        ) {
+          if (!(yield* claimRealtimeStop(nativeThreadId, callId))) return;
+          yield* client.raw
+            .request("thread/realtime/stop", { threadId: nativeThreadId })
+            .pipe(Effect.asVoid, Effect.ignore);
+          yield* clearRealtimeCall(nativeThreadId, callId);
+        });
         // Drain final notifications before the session manager retires the dead process.
         // Queue.fail lets readers take items already buffered before they see the failure.
         yield* client.awaitTermination.pipe(
@@ -2342,6 +2560,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           nativeTurnId: string,
           attemptsRemaining = 1_000,
         ): Effect.fn.Return<ActiveCodexTurnContext | undefined> {
+          const pending = pendingVoiceTurns.get(nativeTurnId);
+          if (pending) yield* Deferred.await(pending.adopted);
           const context = (yield* Ref.get(activeTurns)).get(nativeTurnId);
           if (context !== undefined || attemptsRemaining <= 0) {
             return context;
@@ -4856,6 +5076,38 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
         );
 
+        yield* client.handleServerNotification("thread/realtime/sdp", (payload) =>
+          Effect.gen(function* () {
+            const active = (yield* Ref.get(realtimeCalls)).get(payload.threadId);
+            if (active !== undefined) yield* Deferred.succeed(active.answer, payload.sdp);
+          }),
+        );
+        yield* client.handleServerNotification("thread/realtime/itemAdded", (payload) =>
+          Effect.gen(function* () {
+            const item = payload.item;
+            if (
+              !Predicate.isObject(item) ||
+              item.type !== "handoff_request" ||
+              typeof item.input_transcript !== "string"
+            ) {
+              return;
+            }
+            const transcript = item.input_transcript.trim();
+            if (!transcript) return;
+            yield* Ref.update(realtimeCalls, (current) => {
+              const call = current.get(payload.threadId);
+              if (call === undefined || call.stopping === true) return current;
+              return new Map(current).set(payload.threadId, { ...call, transcript });
+            });
+          }),
+        );
+        yield* client.handleServerNotification("thread/realtime/error", (payload) =>
+          failRealtimeHandshake(payload.threadId),
+        );
+        yield* client.handleServerNotification("thread/realtime/closed", (payload) =>
+          failRealtimeHandshake(payload.threadId),
+        );
+
         yield* client.handleServerNotification("turn/started", (payload) =>
           Effect.gen(function* () {
             const context = (yield* Ref.get(activeTurns)).get(payload.turn.id);
@@ -4903,6 +5155,63 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               continuedRuns.set(goalHold.context.providerTurnId, goalRun);
               continuedRuns.set(next.providerTurnId, goalRun);
               yield* Deferred.succeed(goalHold.next, next);
+              return;
+            }
+            const voiceCall = yield* Ref.modify(realtimeCalls, (current) => {
+              const call = current.get(payload.threadId);
+              if (call === undefined || call.stopping === true) return [undefined, current];
+              return [
+                call,
+                new Map(current).set(payload.threadId, { ...call, transcript: undefined }),
+              ];
+            });
+            if (voiceCall !== undefined) {
+              const voice = voiceCall.onTurnStarted;
+              const nativeTurnId = payload.turn.id;
+              const adopted = yield* Deferred.make<void>();
+              const pending = {
+                threadId: payload.threadId,
+                startedAt: codexTimestamp(payload.turn.startedAt),
+                adopted,
+                notifications: [] as Array<Effect.Effect<void, CodexErrors.CodexAppServerError>>,
+              };
+              pendingVoiceTurns.set(nativeTurnId, pending);
+              const text =
+                voiceCall.transcript ??
+                payload.turn.items
+                  .flatMap((item) =>
+                    item.type === "userMessage" ? [codexUserMessageText(item.content)] : [],
+                  )
+                  .join("\n");
+              yield* Effect.gen(function* () {
+                yield* voice({ nativeTurnId, text }).pipe(
+                  Effect.andThen(Deferred.await(adopted)),
+                  Effect.timeout("30 seconds"),
+                );
+                for (const notification of pending.notifications)
+                  yield* notification.pipe(Effect.ignore);
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Could not attach Codex voice turn", {
+                    nativeTurnId,
+                    cause,
+                  }).pipe(
+                    Effect.andThen(
+                      client.request("turn/interrupt", {
+                        threadId: payload.threadId,
+                        turnId: nativeTurnId,
+                      }),
+                    ),
+                    Effect.ignore,
+                  ),
+                ),
+                Effect.ensuring(
+                  Effect.sync(() => pendingVoiceTurns.delete(nativeTurnId)).pipe(
+                    Effect.andThen(Deferred.succeed(adopted, undefined)),
+                  ),
+                ),
+                Effect.forkIn(scope),
+              );
               return;
             }
             // Pause orphan goal turns so they cannot work without an owning run.
@@ -7233,6 +7542,32 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         });
 
+        const resumeNativeThreadWithPolicy = Effect.fn(
+          "CodexAdapterV2.resumeNativeThreadWithPolicy",
+        )(function* (input: {
+          readonly nativeThreadId: string;
+          readonly appThreadId: ThreadId | null;
+          readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+          readonly cwd?: string | null;
+          readonly params: Record<string, unknown>;
+        }) {
+          const wasApplied = appliedNativeToolPolicyByThread.has(input.nativeThreadId);
+          const previousPolicy = appliedNativeToolPolicyByThread.get(input.nativeThreadId);
+          if (
+            loadedNativeThreads.has(input.nativeThreadId) &&
+            wasApplied &&
+            !sameNativeToolPolicy(previousPolicy, input.mcpSession?.nativeToolPolicy)
+          ) {
+            // Codex caches prompt/skill context for subscribed threads. Unsubscribe only this
+            // idle native thread before resume so changed and removed denials both take effect.
+            yield* client.request("thread/unsubscribe", { threadId: input.nativeThreadId });
+            loadedNativeThreads.delete(input.nativeThreadId);
+          }
+          const response = yield* resumeNativeThread(input.nativeThreadId, input.params);
+          markNativeThreadLoaded(input.nativeThreadId, input.mcpSession, input.cwd);
+          return response;
+        });
+
         const startNativeTurn = Effect.fn("CodexAdapterV2.startNativeTurn")(
           function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -7522,11 +7857,118 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           driver: CODEX_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
+          startRealtime: Effect.fn("CodexAdapterV2.startRealtime")(function* (realtimeInput) {
+            const protocolError = (cause: unknown) =>
+              new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CODEX_PROVIDER,
+                detail: "Codex realtime negotiation failed",
+                cause,
+              });
+            const nativeThreadId = yield* getNativeThreadId(realtimeInput.providerThread);
+            const answer = yield* Deferred.make<
+              string,
+              ProviderAdapter.ProviderAdapterProtocolError
+            >();
+            const reserved = yield* Ref.modify(realtimeCalls, (current) => {
+              if (current.has(nativeThreadId)) return [false, current];
+              const updated = new Map(current).set(nativeThreadId, {
+                callId: realtimeInput.callId,
+                answer,
+                onTurnStarted: realtimeInput.onTurnStarted,
+                transcript: undefined,
+              });
+              return [true, updated];
+            });
+            if (!reserved) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CODEX_PROVIDER,
+                detail: "A realtime call is already active for this thread",
+              });
+            }
+            if (realtimeInput.providerThread.status !== "active") {
+              yield* Effect.gen(function* () {
+                const appThreadId = realtimeInput.providerThread.appThreadId;
+                const mcpSession = yield* readMcpSession(appThreadId);
+                const previousPolicy = appliedNativeToolPolicyByThread.get(nativeThreadId);
+                const refreshSkills =
+                  (previousPolicy?.deniedSkills.length ?? 0) > 0 ||
+                  (mcpSession?.nativeToolPolicy?.deniedSkills.length ?? 0) > 0;
+                const nativeToolPolicyConfig = yield* codexNativeToolPolicyConfig({
+                  client,
+                  cwd: realtimeInput.runtimePolicy.cwd,
+                  mcpSession,
+                  ...(refreshSkills ? { refreshSkills: true } : {}),
+                });
+                yield* ensureInitialized.pipe(
+                  Effect.andThen(
+                    resumeNativeThreadWithPolicy({
+                      nativeThreadId,
+                      appThreadId,
+                      mcpSession,
+                      cwd: realtimeInput.runtimePolicy.cwd,
+                      params: {
+                        excludeTurns: true,
+                        ...codexThreadRuntimeParams({
+                          threadId: appThreadId,
+                          mcpSession,
+                          modelSelection: realtimeInput.modelSelection,
+                          runtimePolicy: realtimeInput.runtimePolicy,
+                          ...(nativeToolPolicyConfig === undefined
+                            ? {}
+                            : { nativeToolPolicyConfig }),
+                        }),
+                      },
+                    }),
+                  ),
+                );
+              }).pipe(
+                Effect.mapError(protocolError),
+                Effect.tapError(() => clearRealtimeCall(nativeThreadId, realtimeInput.callId)),
+                Effect.onInterrupt(() => clearRealtimeCall(nativeThreadId, realtimeInput.callId)),
+              );
+            }
+            const started = client.raw
+              .request("thread/realtime/start", {
+                threadId: nativeThreadId,
+                version: "v3",
+                outputModality: "audio",
+                includeStartupContext: true,
+                flushTranscriptTailOnSessionEnd: true,
+                transport: { type: "webrtc", sdp: realtimeInput.offer },
+              })
+              .pipe(Effect.asVoid, Effect.mapError(protocolError));
+            const negotiation = ensureInitialized.pipe(
+              Effect.andThen(started),
+              Effect.andThen(Deferred.await(answer)),
+              Effect.timeout("20 seconds"),
+              Effect.mapError(protocolError),
+              Effect.tapError(() => cancelRealtimeCall(nativeThreadId, realtimeInput.callId)),
+              Effect.onInterrupt(() => cancelRealtimeCall(nativeThreadId, realtimeInput.callId)),
+            );
+            return { answer: yield* negotiation };
+          }),
+          stopRealtime: Effect.fn("CodexAdapterV2.stopRealtime")(function* (realtimeInput) {
+            const nativeThreadId = yield* getNativeThreadId(realtimeInput.providerThread);
+            if (!(yield* claimRealtimeStop(nativeThreadId, realtimeInput.callId))) return;
+            yield* client.raw.request("thread/realtime/stop", { threadId: nativeThreadId }).pipe(
+              Effect.asVoid,
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CODEX_PROVIDER,
+                    detail: "Codex realtime session could not be stopped",
+                    cause,
+                  }),
+              ),
+              Effect.ensuring(clearRealtimeCall(nativeThreadId, realtimeInput.callId)),
+            );
+          }),
           events: Stream.fromEffectRepeat(Queue.take(events)),
           canReuseContextUsage: canReuseCodexContextUsage,
           normalizeThreadLoadModelSelection: normalizeCodexThreadLoadModelSelection,
           // Idle release can beat delayed subagent resumes: Codex reports them completed between turns with no resume-expected signal.
           hasPendingBackgroundWork: Effect.gen(function* () {
+            if ((yield* Ref.get(realtimeCalls)).size > 0) return true;
             for (const items of (yield* Ref.get(runningCommandItemsByTurn)).values()) {
               if (items.size > 0) {
                 return true;
@@ -7552,6 +7994,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
           // Untraced: the run's event stream calls this once per provider event.
           hasPendingBackgroundWorkForThread: Effect.fnUntraced(function* (providerThread) {
+            const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+            if (
+              nativeThreadId !== null &&
+              nativeThreadId !== undefined &&
+              (yield* Ref.get(realtimeCalls)).has(nativeThreadId)
+            ) {
+              return true;
+            }
             const contexts = [
               ...(yield* Ref.get(activeTurns)).values(),
               ...(yield* Ref.get(settledTurns)).values(),
@@ -7573,17 +8023,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
           ensureThread: (threadInput) =>
             ensureInitialized.pipe(
-              Effect.andThen(mcpSessions.read(threadInput.threadId)),
-              Effect.flatMap((mcpSession) =>
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    threadId: threadInput.threadId,
+              Effect.andThen(
+                Effect.gen(function* () {
+                  const mcpSession = yield* mcpSessions.read(threadInput.threadId);
+                  const nativeToolPolicyConfig = yield* codexNativeToolPolicyConfig({
+                    client,
+                    cwd: threadInput.runtimePolicy.cwd,
                     mcpSession,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                ),
+                  });
+                  const response = yield* client.request(
+                    "thread/start",
+                    codexThreadRuntimeParams({
+                      threadId: threadInput.threadId,
+                      mcpSession,
+                      ...(nativeToolPolicyConfig === undefined ? {} : { nativeToolPolicyConfig }),
+                      modelSelection: threadInput.modelSelection,
+                      runtimePolicy: threadInput.runtimePolicy,
+                    }),
+                  );
+                  markNativeThreadLoaded(
+                    response.thread.id,
+                    mcpSession,
+                    threadInput.runtimePolicy.cwd,
+                  );
+                  return response;
+                }),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
@@ -7608,18 +8072,38 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (threadInput) {
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
               const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
-              const resume = resumeNativeThread(nativeThreadId, {
-                excludeTurns: true,
-                ...codexThreadRuntimeParams({
-                  threadId: appThreadId,
-                  mcpSession: yield* readMcpSession(appThreadId),
-                  ...(threadInput.modelSelection === undefined
-                    ? {}
-                    : { modelSelection: threadInput.modelSelection }),
-                  ...(threadInput.runtimePolicy === undefined
-                    ? {}
-                    : { runtimePolicy: threadInput.runtimePolicy }),
-                }),
+              const mcpSession = yield* readMcpSession(appThreadId);
+              const resumeCwd =
+                threadInput.runtimePolicy?.cwd ?? nativeThreadCwdByThread.get(nativeThreadId);
+              const previousNativePolicy = appliedNativeToolPolicyByThread.get(nativeThreadId);
+              const refreshSkills =
+                (previousNativePolicy?.deniedSkills.length ?? 0) > 0 ||
+                (mcpSession?.nativeToolPolicy?.deniedSkills.length ?? 0) > 0;
+              const nativeToolPolicyConfig = yield* codexNativeToolPolicyConfig({
+                client,
+                cwd: resumeCwd,
+                mcpSession,
+                ...(refreshSkills ? { refreshSkills: true } : {}),
+              });
+              const resume = resumeNativeThreadWithPolicy({
+                nativeThreadId,
+                appThreadId,
+                mcpSession,
+                ...(resumeCwd === undefined ? {} : { cwd: resumeCwd }),
+                params: {
+                  excludeTurns: true,
+                  ...codexThreadRuntimeParams({
+                    threadId: appThreadId,
+                    mcpSession,
+                    ...(nativeToolPolicyConfig === undefined ? {} : { nativeToolPolicyConfig }),
+                    ...(threadInput.modelSelection === undefined
+                      ? {}
+                      : { modelSelection: threadInput.modelSelection }),
+                    ...(threadInput.runtimePolicy === undefined
+                      ? {}
+                      : { runtimePolicy: threadInput.runtimePolicy }),
+                  }),
+                },
               });
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(resume),
@@ -7714,6 +8198,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   cause,
                 }),
             ),
+          ),
+          adoptVoiceTurn: Effect.fn("CodexAdapterV2.adoptVoiceTurn")(
+            function* (turnInput, nativeTurnId) {
+              const pending = pendingVoiceTurns.get(nativeTurnId);
+              if (
+                pending === undefined ||
+                pending.threadId !== turnInput.providerThread.nativeThreadRef?.nativeId
+              ) {
+                return yield* toProtocolError("The Codex voice turn has already ended.");
+              }
+              yield* registerRootTurn({ turnInput, nativeTurnId, startedAt: pending.startedAt });
+              yield* Deferred.succeed(pending.adopted, undefined);
+            },
           ),
           startTurn: (turnInput) => {
             const goalCommand =
@@ -7812,6 +8309,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 threadClosings.set(nativeThreadId, yield* Deferred.make<void>());
               }
               yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
+              loadedNativeThreads.delete(nativeThreadId);
             },
             (effect, unloadInput) =>
               effect.pipe(
@@ -8401,14 +8899,34 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }
               // thread/revert requires the thread loaded in this app-server; resume after restart or idle release.
               if (!loaded) {
-                yield* resumeNativeThread(threadId, {
-                  excludeTurns: true,
-                  ...codexThreadRuntimeParams({
-                    threadId: threadInput.providerThread.appThreadId,
-                    mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
-                    modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
-                  }),
+                const mcpSession = yield* readMcpSession(threadInput.providerThread.appThreadId);
+                const appThreadId = threadInput.providerThread.appThreadId;
+                const resumeCwd = input.runtimePolicy.cwd ?? nativeThreadCwdByThread.get(threadId);
+                const previousNativePolicy = appliedNativeToolPolicyByThread.get(threadId);
+                const refreshSkills =
+                  (previousNativePolicy?.deniedSkills.length ?? 0) > 0 ||
+                  (mcpSession?.nativeToolPolicy?.deniedSkills.length ?? 0) > 0;
+                const nativeToolPolicyConfig = yield* codexNativeToolPolicyConfig({
+                  client,
+                  cwd: resumeCwd,
+                  mcpSession,
+                  ...(refreshSkills ? { refreshSkills: true } : {}),
+                });
+                yield* resumeNativeThreadWithPolicy({
+                  nativeThreadId: threadId,
+                  appThreadId,
+                  mcpSession,
+                  ...(resumeCwd === undefined ? {} : { cwd: resumeCwd }),
+                  params: {
+                    excludeTurns: true,
+                    ...codexThreadRuntimeParams({
+                      threadId: appThreadId,
+                      mcpSession,
+                      ...(nativeToolPolicyConfig === undefined ? {} : { nativeToolPolicyConfig }),
+                      modelSelection: input.modelSelection,
+                      runtimePolicy: input.runtimePolicy,
+                    }),
+                  },
                 });
               }
               const response = yield* ensureInitialized.pipe(
@@ -8449,13 +8967,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (threadInput) {
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
               const boundary = yield* resolveCodexForkBoundary(threadInput);
+              const mcpSession = yield* mcpSessions.read(threadInput.targetThreadId);
+              const nativeToolPolicyConfig = yield* codexNativeToolPolicyConfig({
+                client,
+                cwd: threadInput.runtimePolicy?.cwd,
+                mcpSession,
+              });
               const fork = client.request("thread/fork", {
                 threadId,
                 excludeTurns: true,
                 ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
                 ...codexThreadRuntimeParams({
                   threadId: threadInput.targetThreadId,
-                  mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
+                  mcpSession,
+                  ...(nativeToolPolicyConfig === undefined ? {} : { nativeToolPolicyConfig }),
                   ...(threadInput.modelSelection === undefined
                     ? {}
                     : { modelSelection: threadInput.modelSelection }),
@@ -8485,6 +9010,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       cause,
                     }),
                 ),
+              );
+              markNativeThreadLoaded(
+                response.thread.id,
+                mcpSession,
+                threadInput.runtimePolicy?.cwd,
               );
               let forkedThread = response.thread;
               if (boundary.rollbackTurnCount > 0) {

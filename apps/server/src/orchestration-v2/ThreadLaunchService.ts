@@ -4,6 +4,7 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
+  resolveProjectProviderInstanceId,
   type ChatAttachment,
   type MessageId,
   type ModelSelection,
@@ -27,8 +28,10 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -41,6 +44,7 @@ import {
 } from "@t3tools/shared/git";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as RepositoryLocator from "../vcs/RepositoryLocator.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -238,6 +242,8 @@ function failureDetail(error: unknown): string {
 
 const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
   const terminals = yield* TerminalManager.TerminalManager;
@@ -961,7 +967,7 @@ const make = Effect.gen(function* () {
     function* (request) {
       // Scratch has no Git repository. Normalize before folder allocation so
       // durable preparation and retries use the thread's own Scratch folder.
-      const input: ThreadLaunchInput =
+      let input: ThreadLaunchInput =
         request.workspaceStrategy.type === "worktree" &&
         (yield* managedFolders.isScratchProject(request.projectId))
           ? { ...request, workspaceStrategy: { type: "root" } }
@@ -979,6 +985,35 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+      if (input.workspaceStrategy.type === "worktree") {
+        const repository = yield* RepositoryLocator.locateRepositoryMarker(
+          project.workspaceRoot,
+          fileSystem,
+          path,
+        );
+        if (repository?.kind === "arc") {
+          // Arc has no Git worktrees. Keep first-turn launch on its root without invoking Git.
+          input = { ...input, workspaceStrategy: { type: "root" } };
+        }
+      }
+      const profileSettings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError(mapError(input, "resolve-project")),
+      );
+      const scopedInstanceId = resolveProjectProviderInstanceId(
+        profileSettings,
+        input.projectId,
+        input.modelSelection.instanceId,
+      );
+      if (scopedInstanceId === undefined) {
+        return yield* mapError(
+          input,
+          "resolve-project",
+        )("This provider is not available in the project's profile.");
+      }
+      input = {
+        ...input,
+        modelSelection: { ...input.modelSelection, instanceId: scopedInstanceId },
+      };
       if (input.reuseExistingThread === true && input.threadId === undefined) {
         return yield* mapError(
           input,

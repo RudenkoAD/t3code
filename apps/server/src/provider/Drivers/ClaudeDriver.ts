@@ -1,4 +1,9 @@
-import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  profileProviderInstanceBaseId,
+} from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -56,6 +61,7 @@ import {
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeClaudeMaintenanceResolution } from "./ClaudeMaintenance.ts";
+import { profileProviderHomeDirectory } from "../profileProviderHome.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -116,8 +122,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       driverKind: DRIVER_KIND,
       instanceId,
     });
+    const parsedProfileInstance = profileProviderInstanceBaseId(instanceId);
+    const profile =
+      parsedProfileInstance?.baseId === ProviderInstanceId.make("claudeAgent")
+        ? parsedProfileInstance.profile
+        : undefined;
     const effectiveConfig = {
       ...config,
+      ...(profile === undefined
+        ? {}
+        : {
+            homePath: profileProviderHomeDirectory(
+              path,
+              path.join(stateDir, "profiles"),
+              profile,
+              "claude",
+            ),
+          }),
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
     } satisfies ClaudeSettings;
@@ -153,7 +174,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         accentColor,
         environment,
         enabled,
-        config,
+        config: effectiveConfig,
       },
       {
         scopedLimitNames,
