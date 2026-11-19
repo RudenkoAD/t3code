@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import * as RelayClient from "@t3tools/shared/relayClient";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { requireConnectAllowed } from "../cli/connect.ts";
 import { LegacyCloudConnectEnabled } from "./legacyCloudMode.ts";
 import { layerDisabledRelayClient } from "./legacyCloudMode.ts";
@@ -23,5 +24,8 @@ it.effect("legacy fork mode refuses cloud linking from the CLI", () =>
   Effect.gen(function* () {
     const failure = yield* Effect.flip(requireConnectAllowed);
     assert.include(failure.message, "direct pairing");
-  }).pipe(Effect.provideService(LegacyCloudConnectEnabled, false)),
+  }).pipe(
+    Effect.provideService(LegacyCloudConnectEnabled, false),
+    Effect.provide(ManagedPolicy.layerTest()),
+  ),
 );

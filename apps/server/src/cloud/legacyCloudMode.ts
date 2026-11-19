@@ -29,7 +29,7 @@ export const layerDisabledRelayClient = Layer.succeed(
   RelayClient.RelayClient.of({
     resolve: Effect.succeed({ status: "missing", version: RelayClient.CLOUDFLARED_VERSION }),
     install: refuseInstall(),
-    installWithProgress: () => refuseInstall(),
+    installWithProgress: refuseInstall,
     pruneManagedVersions: Effect.void,
   }),
 );
