@@ -1704,27 +1704,29 @@ export const layerDisabled = Layer.effect(
   Effect.gen(function* () {
     const service = yield* CloudLink;
     const disabled = () => Effect.fail(new CloudLinkDisabledError({}));
-    const linkState = service.linkState().pipe(
-      Effect.map((state) => {
-        const { tunnelHostname: _tunnelHostname, reachability: _reachability, ...rest } = state;
-        return {
-          ...rest,
-          linked: false,
-          cloudUserId: null,
-          relayUrl: null,
-          relayIssuer: null,
-          managedTunnelActive: false,
-          publishAgentActivity: false,
-          holdWebhooksWhileOffline: false,
-        };
-      }),
+    const linkState = Effect.fn("CloudLink.disabledLinkState")(() =>
+      service.linkState().pipe(
+        Effect.map((state) => {
+          const { tunnelHostname: _tunnelHostname, reachability: _reachability, ...rest } = state;
+          return {
+            ...rest,
+            linked: false,
+            cloudUserId: null,
+            relayUrl: null,
+            relayIssuer: null,
+            managedTunnelActive: false,
+            publishAgentActivity: false,
+            holdWebhooksWhileOffline: false,
+          };
+        }),
+      ),
     );
     const notLinked = () => Effect.succeed({ status: "not_linked" as const });
     const notStarted = () => Effect.succeed(false);
     const notDesired = () => Effect.succeed(null);
     return CloudLink.of({
       ...service,
-      linkState: () => linkState,
+      linkState,
       linkProof: disabled,
       applyRelayConfig: disabled,
       updatePreferences: disabled,
