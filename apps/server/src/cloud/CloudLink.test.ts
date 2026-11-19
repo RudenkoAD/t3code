@@ -21,6 +21,7 @@ import * as CloudLink from "./CloudLink.ts";
 import * as ConnectReachability from "./ConnectReachability.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 import {
+  CLOUD_ENDPOINT_RUNTIME_CONFIG,
   CLOUD_LINKED_USER_ID,
   HOLD_WEBHOOKS_WHILE_OFFLINE_SECRET,
   PUBLISH_AGENT_ACTIVITY_SECRET,
@@ -38,6 +39,7 @@ const withService = <A, E>(
     readonly relayFails?: boolean;
     readonly failActivityRead?: boolean;
     readonly failHoldRead?: boolean;
+    readonly connectDisabled?: boolean;
     readonly holdFirstRelayCall?: {
       readonly started: () => void;
       readonly released: Promise<void>;
@@ -45,6 +47,7 @@ const withService = <A, E>(
   },
   body: (input: {
     readonly preferences: { readonly update: CloudLink.CloudLink["Service"]["updatePreferences"] };
+    readonly cloudLink: CloudLink.CloudLink["Service"];
     readonly stored: Map<string, Uint8Array>;
     readonly relayCalls: Array<boolean>;
   }) => Effect.Effect<A, E, never>,
@@ -93,12 +96,17 @@ const withService = <A, E>(
                 }),
               )
             : Effect.sync(() => void stored.set(name, value)),
+        remove: (name) => Effect.sync(() => void stored.delete(name)),
       }),
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-1")),
       }),
       Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({ requestCatchUp: () => Effect.void }),
-      Layer.mock(ManagedEndpointRuntime.CloudManagedEndpointRuntime)({}),
+      Layer.mock(ManagedEndpointRuntime.CloudManagedEndpointRuntime)({
+        applyConfig: () => Effect.succeed({ status: "disabled" }),
+        inspectConnector: Effect.succeed(null),
+        withLinkStateLock: (effect) => effect,
+      }),
       ManagedPolicy.layerTest(),
       Layer.mock(ConnectReachability.ConnectReachability)({
         latest: Effect.succeedNone,
@@ -118,10 +126,15 @@ const withService = <A, E>(
     );
     return yield* Effect.gen(function* () {
       const link = yield* CloudLink.CloudLink;
-      return yield* body({ preferences: { update: link.updatePreferences }, stored, relayCalls });
+      return yield* body({
+        preferences: { update: link.updatePreferences },
+        cloudLink: link,
+        stored,
+        relayCalls,
+      });
     }).pipe(
       Effect.provide(
-        CloudLink.layer.pipe(
+        (options.connectDisabled ? CloudLink.layerDisabled : CloudLink.layer).pipe(
           // These tests never sign proofs; the mocked secret store cannot create a key pair.
           Layer.provide(Layer.mock(EnvironmentKeys.EnvironmentSigningKey)({ publicKey: "" })),
           Layer.provide(layerDependencies),
@@ -318,4 +331,26 @@ it.effect("unlinks on startup and refuses to link when the policy turns Connect 
       ),
     );
   }),
+);
+
+it.effect("disabled production layer hides legacy tunnel state and still unlinks locally", () =>
+  withService({ connectDisabled: true }, ({ cloudLink, stored, relayCalls }) =>
+    Effect.gen(function* () {
+      stored.set(CLOUD_LINKED_USER_ID, encode("old-user"));
+      stored.set(CLOUD_ENDPOINT_RUNTIME_CONFIG, encode("legacy tunnel config"));
+
+      const state = yield* cloudLink.linkState();
+      assert.isFalse(state.linked);
+      assert.isFalse(state.managedTunnelActive);
+      assert.equal(state.cloudUserId, null);
+      assert.equal(state.relayUrl, null);
+
+      const error = yield* cloudLink.applyRelayConfig({} as never).pipe(Effect.flip);
+      assert.equal(error._tag, "CloudLinkDisabledError");
+      yield* cloudLink.unlink();
+      assert.isFalse(stored.has(CLOUD_LINKED_USER_ID));
+      assert.isFalse(stored.has(CLOUD_ENDPOINT_RUNTIME_CONFIG));
+      assert.deepEqual(relayCalls, []);
+    }),
+  ),
 );

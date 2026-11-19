@@ -223,7 +223,7 @@ function PairingForm({
               <PairingInputRow
                 label="Address"
                 keyboardType="url"
-                placeholder="192.168.1.100:3773"
+                placeholder="Address or HTTPS URL"
                 value={hostInput}
                 onChangeText={handleHostChange}
               />
@@ -247,7 +247,7 @@ function PairingForm({
               )}
             >
               {pairingConnectionError ??
-                "For machines on your local network or tailnet. The machine keeps its own provider credentials."}
+                "For local network, tailnet, or corporate Tunneler HTTPS URLs. The machine keeps its own provider credentials."}
             </Text>
           </View>
 

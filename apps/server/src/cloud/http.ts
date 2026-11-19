@@ -61,6 +61,8 @@ const conflict = (error: { readonly message: string }) =>
 
 const connectErrorCases = {
   CloudLinkRelayConfigInvalidError: badRequest,
+  CloudLinkDisabledError: (error: CloudLink.CloudLinkDisabledError) =>
+    Effect.fail(new EnvironmentHttpForbiddenError({ message: error.message })),
   CloudLinkOriginInvalidError: badRequest,
   CloudLinkNotLinkedError: badRequest,
   CloudLinkAccountMismatchError: conflict,

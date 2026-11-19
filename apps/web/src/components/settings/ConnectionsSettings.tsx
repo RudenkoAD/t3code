@@ -1,3 +1,4 @@
+import { useDesktopTunneler } from "./useDesktopTunneler";
 import { SessionPermissions } from "./SessionPermissions";
 import { useSearch } from "@tanstack/react-router";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
@@ -29,6 +30,7 @@ import * as Cause from "effect/Cause";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import {
   applyWslEnableSelection,
+  tunnelerPairingEndpoint,
   isWslSettingsRowVisible,
   missingTailscaleEndpointDescription,
   resolveLocalVersionStatusLabel,
@@ -386,6 +388,13 @@ function ConnectionsSettingsContent({
   const canManageRelay = useEnvironmentScope(accessEnvironmentId, AuthRelayWriteScope);
   const canManageLocalBackend = isPrimaryAccess && !isLocalEnvironmentDisabled() && canMaintain;
   const showsAccess = view === "access";
+  const tunnelerBridge =
+    showsAccess && canManageLocalBackend && desktopBridge?.getTunnelerState ? desktopBridge : null;
+  const tunneler = useDesktopTunneler(tunnelerBridge);
+  const tunnelerEndpoint =
+    tunnelerBridge && tunneler.state?.running && tunneler.state.origin
+      ? tunnelerPairingEndpoint(tunneler.state.origin)
+      : null;
   const authAccessChanges = useEnvironmentQuery(
     showsAccess && canReadAccess && accessEnvironmentId !== null
       ? authEnvironment.accessChanges({
@@ -707,19 +716,19 @@ function ConnectionsSettingsContent({
   const visibleDesktopNetworkAdvertisedEndpoints = isLocalBackendNetworkAccessible
     ? desktopAdvertisedEndpoints.filter((endpoint) => !isTailscaleHttpsEndpoint(endpoint))
     : [];
-  const visibleDesktopAdvertisedEndpoints = tailscaleHttpsEndpoint
-    ? [...visibleDesktopNetworkAdvertisedEndpoints, tailscaleHttpsEndpoint]
-    : visibleDesktopNetworkAdvertisedEndpoints;
+  const visibleDesktopAdvertisedEndpoints = [
+    ...(tunnelerEndpoint ? [tunnelerEndpoint] : []),
+    ...visibleDesktopNetworkAdvertisedEndpoints,
+    ...(tailscaleHttpsEndpoint ? [tailscaleHttpsEndpoint] : []),
+  ];
   const defaultDesktopNetworkAdvertisedEndpoint = selectPairingEndpoint(
     visibleDesktopNetworkAdvertisedEndpoints,
     defaultAdvertisedEndpointKey,
   );
-  const defaultDesktopAdvertisedEndpoint =
-    defaultDesktopNetworkAdvertisedEndpoint ??
-    selectPairingEndpoint(
-      tailscaleHttpsEndpoint ? [tailscaleHttpsEndpoint] : [],
-      defaultAdvertisedEndpointKey,
-    );
+  const defaultDesktopAdvertisedEndpoint = selectPairingEndpoint(
+    visibleDesktopAdvertisedEndpoints,
+    defaultAdvertisedEndpointKey,
+  );
   const defaultDesktopAdvertisedEndpointKey = defaultDesktopAdvertisedEndpoint
     ? endpointDefaultPreferenceKey(defaultDesktopAdvertisedEndpoint)
     : null;
@@ -1224,6 +1233,35 @@ function ConnectionsSettingsContent({
             ) : null}
             {canManageLocalBackend && desktopBridge ? (
               <>
+                {tunnelerBridge ? (
+                  <SettingsRow
+                    id="corporate-tunneler"
+                    title={searchableSetting("corporate-tunneler").title}
+                    description={
+                      tunneler.state?.error ??
+                      tunneler.state?.origin ??
+                      (tunneler.state?.running
+                        ? "Waiting for Tunneler to publish the address…"
+                        : "Pair a device on the corporate network using an HTTPS link.")
+                    }
+                    managed={
+                      tunneler.state?.running
+                        ? undefined
+                        : (remoteClientsDenial ??
+                          managedCapabilityDenial(primaryServerConfig?.managedPolicy, "connect"))
+                    }
+                    control={
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!tunneler.state || tunneler.stopping}
+                        onClick={() => void tunneler.setRunning(!tunneler.state?.running)}
+                      >
+                        {tunneler.state?.running ? "Stop" : "Start"}
+                      </Button>
+                    }
+                  />
+                ) : null}
                 {renderNetworkAccessRow()}
                 {renderEndpointRows()}
                 {renderTailscaleRow()}
@@ -1232,7 +1270,8 @@ function ConnectionsSettingsContent({
             ) : canManageLocalBackend ? (
               renderDisabledNetworkAccessRow()
             ) : null}
-            {canReadRelay || canManageRelay ? (
+            {(!isPrimaryAccess || !desktopBridge?.getTunnelerState) &&
+            (canReadRelay || canManageRelay) ? (
               <CloudLinkRow
                 environmentId={accessEnvironmentId}
                 canReadRelay={canReadRelay}

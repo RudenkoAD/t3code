@@ -3,6 +3,23 @@
 Connect a phone, browser, or another desktop app to T3 Code running on a different
 machine. That machine must stay running and reachable while you work.
 
+## Corporate Tunneler (local fork)
+
+On the Mac, open **Settings → Sharing & access → Corporate Tunneler** and choose
+**Start** with **Network access** off. The desktop app uses the installed `ya tool tunneler` and the Tunneler
+role assigned to your corporate account. The phone needs access to the corporate
+network and must trust its HTTPS certificate.
+
+Once an HTTPS address appears, choose **Authorized clients → Create link** and
+select the permissions for the phone. Scan the **Corporate Tunneler** QR code in
+the mobile app, or paste the full pairing link into **Add environment**. For
+an environment already saved on the phone, open its settings and choose
+**Add route** instead. Use **Stop** in the same desktop setting to close the tunnel. Start it again after
+restarting T3, and create a new link if its address changes.
+
+The following T3 Connect instructions apply to upstream hosts. This fork uses
+Corporate Tunneler for its desktop host.
+
 ## T3 Connect
 
 T3 Connect makes an environment available to your other devices without setting

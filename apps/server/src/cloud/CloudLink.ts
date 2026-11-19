@@ -176,6 +176,15 @@ export class CloudLinkNotLinkedError extends Schema.TaggedError<CloudLinkNotLink
   }
 }
 
+export class CloudLinkDisabledError extends Schema.TaggedError<CloudLinkDisabledError>()(
+  "CloudLinkDisabledError",
+  {},
+) {
+  override get message(): string {
+    return "T3 Connect is disabled in this build. Use direct pairing from the desktop app.";
+  }
+}
+
 export class CloudLinkAccountMismatchError extends Schema.TaggedError<CloudLinkAccountMismatchError>()(
   "CloudLinkAccountMismatchError",
   {},
@@ -386,6 +395,7 @@ export type CloudLinkError =
   | CloudLinkAccountMismatchError
   | CloudLinkAuthorizationMissingError
   | CloudLinkEndpointUnavailableError
+  | CloudLinkDisabledError
   | CloudLinkInternalError
   | CloudLinkNotLinkedError
   | CloudLinkOriginInvalidError
@@ -425,6 +435,7 @@ export class CloudLink extends Context.Service<
     ) => Effect.Effect<
       RelayEnvironmentLinkProof,
       | CloudLinkOriginInvalidError
+      | CloudLinkDisabledError
       | CloudLinkInternalError
       | EnvironmentAuth.ServerAuthInternalError
       | ManagedLimits.ManagedPolicyRefusedError,
@@ -436,6 +447,7 @@ export class CloudLink extends Context.Service<
       EnvironmentCloudRelayConfigResult,
       | CloudLinkAccountMismatchError
       | CloudLinkEndpointUnavailableError
+      | CloudLinkDisabledError
       | CloudLinkInternalError
       | CloudLinkOriginInvalidError
       | CloudLinkRelayConfigInvalidError
@@ -453,7 +465,10 @@ export class CloudLink extends Context.Service<
       input: EnvironmentCloudPreferencesRequest,
     ) => Effect.Effect<
       EnvironmentCloudLinkStateResult,
-      CloudLinkNotLinkedError | CloudLinkInternalError | ManagedLimits.ManagedPolicyRefusedError
+      | CloudLinkNotLinkedError
+      | CloudLinkDisabledError
+      | CloudLinkInternalError
+      | ManagedLimits.ManagedPolicyRefusedError
     >;
     readonly answerHealthRequest: (
       request: RelayCloudEnvironmentHealthRequest,
@@ -461,6 +476,7 @@ export class CloudLink extends Context.Service<
       RelayEnvironmentHealthResponse,
       | CloudLinkProofRejectedError
       | CloudLinkProofReplayedError
+      | CloudLinkDisabledError
       | CloudLinkInternalError
       | EnvironmentAuth.ServerAuthInternalError
       | ManagedLimits.ManagedPolicyRefusedError
@@ -471,6 +487,7 @@ export class CloudLink extends Context.Service<
       RelayEnvironmentMintResponse,
       | CloudLinkProofRejectedError
       | CloudLinkProofReplayedError
+      | CloudLinkDisabledError
       | CloudLinkInternalError
       | EnvironmentAuth.ServerAuthInternalError
       | ManagedLimits.ManagedPolicyRefusedError
@@ -1680,3 +1697,43 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(CloudLink, make);
+
+/** Production fork adapter; generic consumers and tests keep the normal CloudLink layer. */
+export const layerDisabled = Layer.effect(
+  CloudLink,
+  Effect.gen(function* () {
+    const service = yield* CloudLink;
+    const disabled = () => Effect.fail(new CloudLinkDisabledError({}));
+    const linkState = service.linkState().pipe(
+      Effect.map((state) => {
+        const { tunnelHostname: _tunnelHostname, reachability: _reachability, ...rest } = state;
+        return {
+          ...rest,
+          linked: false,
+          cloudUserId: null,
+          relayUrl: null,
+          relayIssuer: null,
+          managedTunnelActive: false,
+          publishAgentActivity: false,
+          holdWebhooksWhileOffline: false,
+        };
+      }),
+    );
+    const notLinked = () => Effect.succeed({ status: "not_linked" as const });
+    const notStarted = () => Effect.succeed(false);
+    const notDesired = () => Effect.succeed(null);
+    return CloudLink.of({
+      ...service,
+      linkState: () => linkState,
+      linkProof: disabled,
+      applyRelayConfig: disabled,
+      updatePreferences: disabled,
+      answerHealthRequest: disabled,
+      mintCredential: disabled,
+      reconcileDesiredLinkIfStillDesired: notDesired,
+      registerManagedTunnelRecovery: notLinked,
+      recoverManagedTunnel: notStarted,
+      startManagedTunnelIfOriginConfirmed: notStarted,
+    });
+  }),
+).pipe(Layer.provide(layer));

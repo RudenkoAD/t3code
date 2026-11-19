@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildPairingAppLink,
+  isCorporateTunnelerHost,
   readPairingAppLink,
   RemoteBackendUrlMissingError,
   RemotePairingTokenMissingError,
@@ -20,6 +21,65 @@ describe("remote", () => {
       httpBaseUrl: "https://remote.example.com/",
       wsBaseUrl: "wss://remote.example.com/",
     });
+  });
+
+  it("upgrades pasted corporate Tunneler pairing URLs to HTTPS and WSS", () => {
+    expect(
+      resolveRemotePairingTarget({
+        pairingUrl:
+          "http://owner-7-vla-1.tun.si.yandex-team.ru./pair?source=mobile#token=pairing-token",
+      }),
+    ).toEqual({
+      credential: "pairing-token",
+      httpBaseUrl: "https://owner-7-vla-1.tun.si.yandex-team.ru./",
+      wsBaseUrl: "wss://owner-7-vla-1.tun.si.yandex-team.ru./",
+    });
+  });
+
+  it("upgrades hosted corporate Tunneler targets to HTTPS and WSS", () => {
+    expect(
+      resolveRemotePairingTarget({
+        pairingUrl:
+          "https://app.t3.codes/pair?host=http%3A%2F%2Fowner-7-vla-1.tun.si.yandex-team.ru%2F#token=pairing-token",
+      }),
+    ).toEqual({
+      credential: "pairing-token",
+      httpBaseUrl: "https://owner-7-vla-1.tun.si.yandex-team.ru/",
+      wsBaseUrl: "wss://owner-7-vla-1.tun.si.yandex-team.ru/",
+    });
+  });
+
+  it("upgrades websocket scheme for legacy corporate Tunneler hosts", () => {
+    expect(
+      resolveRemotePairingTarget({
+        host: "ws://legacy.tunneler-si.yandex-team.ru",
+        pairingCode: "pairing-token",
+      }),
+    ).toEqual({
+      credential: "pairing-token",
+      httpBaseUrl: "https://legacy.tunneler-si.yandex-team.ru/",
+      wsBaseUrl: "wss://legacy.tunneler-si.yandex-team.ru/",
+    });
+  });
+
+  it("keeps cleartext LAN pairing URLs on HTTP and WS", () => {
+    expect(
+      resolveRemotePairingTarget({
+        pairingUrl: "http://192.168.1.2:3773/pair#token=pairing-token",
+      }),
+    ).toEqual({
+      credential: "pairing-token",
+      httpBaseUrl: "http://192.168.1.2:3773/",
+      wsBaseUrl: "ws://192.168.1.2:3773/",
+    });
+  });
+
+  it("recognizes only valid DNS labels on corporate Tunneler domains", () => {
+    expect(isCorporateTunnelerHost("owner-7-vla-1.tun.si.yandex-team.ru")).toBe(true);
+    expect(isCorporateTunnelerHost("legacy.tunneler-si.yandex-team.ru.")).toBe(true);
+    expect(isCorporateTunnelerHost("-owner.tun.si.yandex-team.ru")).toBe(false);
+    expect(isCorporateTunnelerHost("nested.owner.tun.si.yandex-team.ru")).toBe(false);
+    expect(isCorporateTunnelerHost("tunnel-example.test")).toBe(false);
   });
 
   it("accepts pairing urls that still use a query token", () => {

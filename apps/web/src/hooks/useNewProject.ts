@@ -70,12 +70,11 @@ export function useNewProject() {
   return async (input: {
     readonly environmentId: EnvironmentId;
     readonly name: string;
-    readonly profile?: "work" | "personal";
     readonly publishTo: NewProjectPublishTarget | null;
   }): Promise<boolean> => {
     const result = await createNew({
       environmentId: input.environmentId,
-      input: { name: input.name, ...(input.profile ? { profile: input.profile } : {}) },
+      input: { name: input.name },
     });
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) {

@@ -6,6 +6,8 @@ import {
   resolveTailscaleServeBaseUrl,
   selectQrEndpointOption,
   togglePairingScopeSelection,
+  tunnelerPairingEndpoint,
+  resolveAdvertisedEndpointPairingUrl,
 } from "./ConnectionsSettings.logic";
 
 describe("togglePairingScopeSelection", () => {
@@ -200,4 +202,13 @@ describe("resolveAccessEnvironmentId", () => {
       expected,
     );
   });
+});
+
+it("keeps corporate pairing links and WebSocket traffic on the tunnel origin", () => {
+  const origin = "https://office-7-vla-1.tun.si.yandex-team.ru";
+  const endpoint = tunnelerPairingEndpoint(origin);
+  expect(endpoint.wsBaseUrl).toBe("wss://office-7-vla-1.tun.si.yandex-team.ru");
+  expect(resolveAdvertisedEndpointPairingUrl(endpoint, "ONETIME")).toBe(
+    origin + "/pair#token=ONETIME",
+  );
 });

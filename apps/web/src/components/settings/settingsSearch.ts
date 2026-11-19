@@ -1232,6 +1232,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     localBackendManagementOnly: true,
   },
   {
+    id: "corporate-tunneler",
+    title: "Corporate Tunneler",
+    to: "/settings/access",
+    searchTerms: ["T3 Connect corporate VPN phone pairing QR"],
+    desktopOnly: true,
+    localBackendManagementOnly: true,
+  },
+  {
     id: "tailscale-https",
     title: "Tailscale HTTPS",
     to: "/settings/access",

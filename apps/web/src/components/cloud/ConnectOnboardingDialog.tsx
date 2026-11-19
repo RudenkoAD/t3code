@@ -40,7 +40,7 @@ import { toastManager } from "../ui/toast";
 import { WizardSteps, WizardPopup, WizardHeader, WizardPanel, WizardFooter } from "../ui/wizard";
 
 export function ConnectOnboardingDialog() {
-  if (!hasCloudPublicConfig()) return null;
+  if (!hasCloudPublicConfig() || window.desktopBridge?.getTunnelerState) return null;
 
   return <ConfiguredConnectOnboardingDialog />;
 }

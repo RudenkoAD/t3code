@@ -522,6 +522,18 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
   tailscaleServePort: Schema.Number,
 });
 
+export interface DesktopTunnelerState {
+  running: boolean;
+  origin: string | null;
+  error: string | null;
+}
+
+export const DesktopTunnelerStateSchema = Schema.Struct({
+  running: Schema.Boolean,
+  origin: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+});
+
 export interface PickFolderOptions {
   initialPath?: string | null;
   targetEnvironmentId?: string;
@@ -1128,6 +1140,9 @@ export interface DesktopBridge {
     readonly port?: number;
   }) => Promise<DesktopServerExposureState>;
   getAdvertisedEndpoints: () => Promise<readonly AdvertisedEndpoint[]>;
+  startTunneler: () => Promise<DesktopTunnelerState>;
+  getTunnelerState: () => Promise<DesktopTunnelerState>;
+  stopTunneler: () => Promise<DesktopTunnelerState>;
   getWslState: () => Promise<DesktopWslState>;
   setWslBackendEnabled: (enabled: boolean) => Promise<DesktopWslState>;
   setWslDistro: (distro: string | null) => Promise<DesktopWslState>;

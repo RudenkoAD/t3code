@@ -215,6 +215,7 @@ import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
+import { LEGACY_CLOUD_CONNECT_ENABLED, layerDisabledRelayClient } from "./cloud/legacyCloudMode.ts";
 import {
   disableTailscaleServe,
   ensureTailscaleServe,
@@ -317,6 +318,7 @@ const layerRelayClient = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
     const policy = yield* ManagedPolicy.ManagedPolicy;
+    if (!LEGACY_CLOUD_CONNECT_ENABLED) return layerDisabledRelayClient;
     const layerCloudflared = RelayClient.layerCloudflared({ baseDir: config.baseDir });
     if (ManagedLimits.allowsConnect(policy)) return layerCloudflared;
     // The connector only carries T3 Connect, so a policy without Connect never installs one.
@@ -1071,8 +1073,11 @@ const layerMakeServer = Layer.unwrap(
     const layerCloudDesiredLinkReconcile = Layer.effectDiscard(
       Effect.gen(function* () {
         const cloudLink = yield* CloudLink.CloudLink;
-        // CloudLink unlinks on startup when the policy turns Connect off; nothing to restore.
-        if (!ManagedLimits.allowsConnect(yield* ManagedPolicy.ManagedPolicy)) {
+        // The fork never restores legacy Connect state; CloudLink's off branch keeps status/unlink.
+        if (
+          !LEGACY_CLOUD_CONNECT_ENABLED ||
+          !ManagedLimits.allowsConnect(yield* ManagedPolicy.ManagedPolicy)
+        ) {
           yield* Deferred.succeed(cloudLinkParked, undefined).pipe(Effect.orDie);
           return;
         }
@@ -1285,7 +1290,11 @@ const layerMakeServer = Layer.unwrap(
     );
 
     return layerServerApplication.pipe(
-      Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
+      Layer.provide(
+        (LEGACY_CLOUD_CONNECT_ENABLED ? CloudLink.layer : CloudLink.layerDisabled).pipe(
+          Layer.provideMerge(ConnectReachability.layer),
+        ),
+      ),
       Layer.provideMerge(layerRuntimeServices),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(

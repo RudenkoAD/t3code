@@ -6,6 +6,10 @@ const HOSTED_PAIRING_LABEL_PARAM = "label";
 const PAIRING_APP_LINK_PARAM = "pairingUrl";
 const APP_LINK_PROTOCOL = /^t3code(?:-[a-z]+)?:$/;
 const SUPPORTED_REMOTE_BACKEND_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
+const CORPORATE_TUNNEL_HOST_PATTERNS = [
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.tun\.si\.yandex-team\.ru\.?$/i,
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.tunneler-si\.yandex-team\.ru\.?$/i,
+];
 
 export const readHashParams = (url: URL): URLSearchParams =>
   new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
@@ -74,6 +78,9 @@ export type RemotePairingTargetError = typeof RemotePairingTargetError.Type;
 const hasSupportedRemoteBackendProtocol = (url: URL): boolean =>
   SUPPORTED_REMOTE_BACKEND_PROTOCOLS.has(url.protocol);
 
+export const isCorporateTunnelerHost = (hostname: string): boolean =>
+  CORPORATE_TUNNEL_HOST_PATTERNS.some((pattern) => pattern.test(hostname));
+
 const normalizeRemoteBaseUrl = (
   rawValue: string,
   source: RemoteBackendUrlInvalidError["source"],
@@ -98,6 +105,10 @@ const normalizeRemoteBaseUrl = (
       source,
       protocol: url.protocol,
     });
+  }
+  if (isCorporateTunnelerHost(url.hostname)) {
+    if (url.protocol === "http:") url.protocol = "https:";
+    else if (url.protocol === "ws:") url.protocol = "wss:";
   }
   url.pathname = "/";
   url.search = "";
@@ -235,10 +246,11 @@ export const resolveRemotePairingTarget = (input: {
     if (!credential) {
       throw new RemotePairingTokenMissingError({ host: url.host });
     }
+    const backendUrl = normalizeRemoteBaseUrl(url.toString(), "direct-host");
     return {
       credential,
-      httpBaseUrl: toHttpBaseUrl(url),
-      wsBaseUrl: toWsBaseUrl(url),
+      httpBaseUrl: toHttpBaseUrl(backendUrl),
+      wsBaseUrl: toWsBaseUrl(backendUrl),
     };
   }
 

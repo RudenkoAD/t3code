@@ -17,6 +17,10 @@ import { appCommand } from "./cli/app.ts";
 import { browserCommand } from "./cli/browser.ts";
 import { pairCommand } from "./cli/pair.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
+import {
+  LEGACY_CLOUD_CONNECT_ENABLED,
+  LegacyCloudConnectEnabled,
+} from "./cloud/legacyCloudMode.ts";
 import { extendConnectionAttemptTimeout, keepOutboundFetchOnHttp1 } from "./outboundHttp.ts";
 import { sharedServerCommandFlags } from "./cli/config.ts";
 import { projectCommand } from "./cli/project.ts";
@@ -138,6 +142,7 @@ export function runCli() {
             process.exitCode = 130;
           }),
     ),
+    Effect.provideService(LegacyCloudConnectEnabled, LEGACY_CLOUD_CONNECT_ENABLED),
     Effect.scoped,
     Effect.provide(layerCliRuntime),
     NodeRuntime.runMain,

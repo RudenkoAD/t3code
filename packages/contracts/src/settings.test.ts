@@ -639,6 +639,23 @@ describe("resolveProjectProviderInstanceEnabled", () => {
     expect(resolveProjectProviderInstanceEnabled(settings, null, customId)).toBe(true);
   });
 
+  it("routes both project profiles through the enabled machine OpenCode instance", () => {
+    const id = ProviderInstanceId.make("opencode");
+    const work = ProjectId.make("work");
+    const settings: ServerSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: { [id]: { driver: ProviderDriverKind.make("opencode"), enabled: true } },
+      projectProfiles: { [work]: "work" },
+    };
+    expect(resolveProjectProviderInstanceId(settings, projectId, id)).toBe(id);
+    expect(resolveProjectProviderInstanceEnabled(settings, projectId, id)).toBe(true);
+    expect(resolveProjectProviderInstanceId(settings, work, id)).toBe(id);
+    expect(resolveProjectProviderInstanceEnabled(settings, work, id)).toBe(true);
+    expect(resolveProjectProviderInstanceEnabled(DEFAULT_SERVER_SETTINGS, projectId, id)).toBe(
+      false,
+    );
+  });
+
   it("honors profile provider switches independently", () => {
     const projectId = ProjectId.make("work-project");
     const codexId = ProviderInstanceId.make("codex");

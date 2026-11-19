@@ -2,14 +2,15 @@
 
 ## Work and Personal profiles
 
-When adding a folder from **All profiles**, T3 assigns an Arc checkout to **Work** and other
-folders to **Personal**. Select **Work** or **Personal** first to choose the profile yourself.
+T3 assigns new projects inside an Arc checkout to **Work** and other folders to **Personal**.
+The sidebar profile selector filters the project list.
 Existing projects keep their assignment, with **Personal** as the default for earlier versions.
 Use a project's context menu to move all its chats to the other profile.
 
 Open **Settings → Providers** and choose **Work tools** or **Personal tools**. Each profile
 has its own Codex and Claude Code configuration directory on the machine running T3.
-These are the two providers available in profile-scoped chats.
+Work and Personal share the machine’s OpenCode installation and its configured accounts.
+Enable OpenCode under **Settings → Providers** to select its models in either profile.
 Under **Configured MCP servers**, switch an existing server on or off for Codex or Claude Code.
 Turning it back on restores its saved configuration. Restart the T3 server (quit and reopen
 the desktop app on a local Mac) to apply changes to active provider sessions.

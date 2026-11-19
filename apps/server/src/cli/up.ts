@@ -13,6 +13,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BootService from "../cloud/bootService.ts";
 import * as CliState from "../cloud/CliState.ts";
 import { CLOUD_ENDPOINT_RUNTIME_CONFIG, CLOUD_LINK_REVOKED } from "../cloud/config.ts";
+import { LegacyCloudConnectEnabled } from "../cloud/legacyCloudMode.ts";
 import { hasCloudPublicConfig } from "../cloud/publicConfig.ts";
 import { compareExactServiceVersions } from "../cloud/serviceProtocol.ts";
 import * as ServerConfig from "../config.ts";
@@ -41,6 +42,8 @@ interface Setup {
   readonly connect: boolean | null;
   /** T3 Connect revoked the link; `t3 connect` links again. */
   readonly connectRevoked: boolean;
+  readonly connectDisabled: boolean;
+  readonly legacyConnectConfigured: boolean;
   readonly lan: boolean;
   /** An installed service with no T3CODE_LAN keeps the old default: on. */
   readonly lanFromOldDefault: boolean;
@@ -69,15 +72,22 @@ const readSetup = Effect.fn("cli.up.read_setup")(function* () {
     .pipe(Config.option)
     .parse(ConfigProvider.fromEnv({ env: entries }));
   const secrets = yield* ServerSecretStore.ServerSecretStore;
+  const legacyConnectEnabled = yield* LegacyCloudConnectEnabled;
   const connectRevoked =
     hasCloudPublicConfig && Option.isSome(yield* secrets.get(CLOUD_LINK_REVOKED));
-  const connect = hasCloudPublicConfig
-    ? connectEnabled({
-        cliDesired: yield* CliState.readCliDesiredCloudLink,
-        cliMode: yield* CliState.readCliDesiredLinkMode,
-        managedTunnel: Option.isSome(yield* secrets.get(CLOUD_ENDPOINT_RUNTIME_CONFIG)),
-        revoked: connectRevoked,
-      })
+  const cliDesired = hasCloudPublicConfig && (yield* CliState.readCliDesiredCloudLink);
+  const storedTunnel =
+    hasCloudPublicConfig && Option.isSome(yield* secrets.get(CLOUD_ENDPOINT_RUNTIME_CONFIG));
+  const legacyConnectConfigured = cliDesired || storedTunnel;
+  const connect = legacyConnectEnabled
+    ? hasCloudPublicConfig
+      ? connectEnabled({
+          cliDesired,
+          cliMode: yield* CliState.readCliDesiredLinkMode,
+          managedTunnel: storedTunnel,
+          revoked: connectRevoked,
+        })
+      : null
     : null;
   // Another home's service doesn't read this home's service.env.
   const servesThisHome = service.installed && service.otherBaseDir === undefined;
@@ -85,6 +95,8 @@ const readSetup = Effect.fn("cli.up.read_setup")(function* () {
     service,
     connect,
     connectRevoked,
+    connectDisabled: !legacyConnectEnabled,
+    legacyConnectConfigured,
     lan: Option.getOrElse(lan, () => servesThisHome),
     lanFromOldDefault: Option.isNone(lan) && servesThisHome,
     host: entries.T3CODE_HOST,
@@ -144,18 +156,27 @@ const formatSetup = (setup: Setup) => {
           ? `installed · t3@${service.installedVersion ?? packageJson.version}`
           : "not installed",
     ],
-    ...(setup.connect === null
-      ? []
-      : [
+    ...(setup.connectDisabled
+      ? [
           [
             "T3 Connect",
-            setup.connect
-              ? "on · your T3 account"
-              : setup.connectRevoked
-                ? "off · link revoked. Run `t3 connect`."
-                : "off",
+            setup.legacyConnectConfigured
+              ? "disabled in this build · stored config ignored; use direct pairing"
+              : "disabled in this build · use direct pairing",
           ] as const,
-        ]),
+        ]
+      : setup.connect === null
+        ? []
+        : [
+            [
+              "T3 Connect",
+              setup.connect
+                ? "on · your T3 account"
+                : setup.connectRevoked
+                  ? "off · link revoked. Run `t3 connect`."
+                  : "off",
+            ] as const,
+          ]),
     [
       "Local network",
       setup.host !== undefined
@@ -499,8 +520,15 @@ const setupJson = (setup: Setup) =>
         installedVersion: setup.service.installedVersion ?? null,
         otherBaseDir: setup.service.otherBaseDir ?? null,
       },
-      connect:
-        setup.connect === null ? null : { enabled: setup.connect, revoked: setup.connectRevoked },
+      connect: setup.connectDisabled
+        ? {
+            enabled: false,
+            available: false,
+            legacyConfigIgnored: setup.legacyConnectConfigured,
+          }
+        : setup.connect === null
+          ? null
+          : { enabled: setup.connect, revoked: setup.connectRevoked },
       lan: {
         enabled: setup.lan,
         inheritedDefault: setup.lanFromOldDefault,

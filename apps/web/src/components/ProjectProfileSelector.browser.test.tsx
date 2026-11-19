@@ -5,7 +5,7 @@ import * as Cause from "effect/Cause";
 
 import { act, render } from "../../test/render";
 import { ProjectProfileSelector } from "./ProjectProfileSelector";
-import { profileForNewProject, profileViewIncludesMembers } from "../projectProfileView";
+import { profileViewIncludesMembers } from "../projectProfileView";
 import { ProfileNativeProvidersSettings } from "./settings/ProfileNativeProvidersSettings";
 import { ProfileSettingsEntry } from "./settings/ProfileSettingsEntry";
 
@@ -48,12 +48,6 @@ it("shows only fully classified projects in a single-profile view", () => {
   expect(profileViewIncludesMembers("personal", ["personal", "personal"])).toBe(true);
   expect(profileViewIncludesMembers("work", ["work", "personal"])).toBe(false);
   expect(profileViewIncludesMembers("personal", [])).toBe(false);
-});
-
-it("uses automatic project assignment in All and keeps explicit profile choices", () => {
-  expect(profileForNewProject("all")).toBeUndefined();
-  expect(profileForNewProject("work")).toBe("work");
-  expect(profileForNewProject("personal")).toBe("personal");
 });
 
 it("lets the user choose a sidebar profile filter", async () => {

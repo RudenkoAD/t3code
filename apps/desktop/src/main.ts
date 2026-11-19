@@ -56,6 +56,7 @@ import * as DesktopLinuxUrlHandler from "./app/DesktopLinuxUrlHandler.ts";
 import * as DesktopShutdown from "./app/DesktopShutdown.ts";
 import * as DesktopObservability from "./app/DesktopObservability.ts";
 import * as DesktopServerExposure from "./backend/DesktopServerExposure.ts";
+import * as DesktopTunneler from "./backend/DesktopTunneler.ts";
 import * as DesktopClientSettings from "./settings/DesktopClientSettings.ts";
 import * as DesktopSavedEnvironments from "./settings/DesktopSavedEnvironments.ts";
 import * as DesktopSnapShot from "./snapShot/DesktopSnapShot.ts";
@@ -200,6 +201,8 @@ const layerDesktopBackend = DesktopBackendPool.layer.pipe(
   Layer.provideMerge(layerDesktopWindow),
 );
 
+const layerDesktopTunneler = DesktopTunneler.layer.pipe(Layer.provideMerge(layerDesktopBackend));
+
 const layerDesktopWslBackend = DesktopWslBackend.layer.pipe(
   Layer.provideMerge(layerDesktopBackend),
 );
@@ -228,6 +231,7 @@ const layerDesktopApplication = Layer.mergeAll(
   Layer.provideMerge(layerDesktopSsh),
   Layer.provideMerge(layerDesktopWslBackend),
   Layer.provideMerge(layerDesktopLocalEnvironmentAuth),
+  Layer.provideMerge(layerDesktopTunneler),
 );
 
 // Clerk resolves userData before Electron is ready, so it gets the synchronous FileSystem.

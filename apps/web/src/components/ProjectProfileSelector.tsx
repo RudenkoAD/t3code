@@ -38,11 +38,7 @@ export function ProjectProfileSelector({
         variant="ghost"
         className={className}
         aria-label={`Project profile: ${label}`}
-        title={
-          value === "all"
-            ? "New projects use automatic location-based profile assignment."
-            : `New projects are assigned to ${label}.`
-        }
+        title="Filter projects by profile"
       >
         <SelectValue>{label}</SelectValue>
       </SelectTrigger>

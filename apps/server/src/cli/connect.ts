@@ -30,10 +30,16 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as CliError from "effect/cli/CliError";
 import * as ManagedLimits from "../policy/managedLimits.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BootService from "../cloud/bootService.ts";
+import {
+  LEGACY_CLOUD_CONNECT_DISABLED_MESSAGE,
+  LegacyCloudConnectEnabled,
+  layerDisabledRelayClient,
+} from "../cloud/legacyCloudMode.ts";
 import * as CliState from "../cloud/CliState.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
 import { formatReachabilityFailure } from "../cloud/ConnectReachability.ts";
@@ -147,6 +153,8 @@ function stringToBytes(value: string): Uint8Array {
 
 interface CloudCliStatus {
   readonly desired: boolean;
+  readonly legacyConnectEnabled: boolean;
+  readonly legacyConfigIgnored: boolean;
   readonly authenticated: boolean;
   readonly linked: boolean;
   readonly revoked: boolean;
@@ -189,32 +197,41 @@ function formatCloudStatus(status: CloudCliStatus, options?: { readonly json?: b
     return JSON.stringify(status, null, 2);
   }
 
-  const provisioned = status.revoked
-    ? "removed from T3 Connect"
-    : status.linked
-      ? "provisioned"
-      : status.desired && status.authenticated
-        ? "pending server startup"
-        : "not provisioned";
-  const nextStep = !status.authenticated
-    ? "Run `t3 connect link` to authorize and enable T3 Connect."
+  const provisioned = !status.legacyConnectEnabled
+    ? status.legacyConfigIgnored
+      ? "ignored by this build"
+      : "not used by this build"
     : status.revoked
-      ? "Run `t3 connect link` to link this environment again."
-      : !status.desired
-        ? "Run `t3 connect link` to enable T3 Connect."
-        : !status.linked
-          ? "Start T3 to provision the environment link and launch its managed tunnel."
-          : undefined;
+      ? "removed from T3 Connect"
+      : status.linked
+        ? "provisioned"
+        : status.desired && status.authenticated
+          ? "pending server startup"
+          : "not provisioned";
+  const nextStep = !status.legacyConnectEnabled
+    ? "Use direct pairing from the desktop app."
+    : !status.authenticated
+      ? "Run `t3 connect link` to authorize and enable T3 Connect."
+      : status.revoked
+        ? "Run `t3 connect link` to link this environment again."
+        : !status.desired
+          ? "Run `t3 connect link` to enable T3 Connect."
+          : !status.linked
+            ? "Start T3 to provision the environment link and launch its managed tunnel."
+            : undefined;
 
   return [
     "T3 Connect",
-    `  Exposure: ${status.desired ? "enabled" : "disabled"}`,
+    `  Exposure: ${status.legacyConnectEnabled ? (status.desired ? "enabled" : "disabled") : "disabled in this build"}`,
+    ...(status.legacyConfigIgnored ? ["  Legacy config: ignored"] : []),
     `  Authorization: ${status.authenticated ? "stored credential" : "missing"}`,
     `  Environment link: ${provisioned}`,
-    `  Relay: ${status.relayUrl ?? "not provisioned"}`,
+    `  Relay: ${status.legacyConnectEnabled ? (status.relayUrl ?? "not provisioned") : "ignored by this build"}`,
     `  Publish agent activity: ${status.publishAgentActivity ? "enabled" : "disabled"}`,
-    ...formatRelayClientStatus(status.relayClient),
-    ...(!status.desired || status.linkMode !== "managed"
+    ...(status.legacyConnectEnabled
+      ? formatRelayClientStatus(status.relayClient)
+      : ["  Relay client: disabled by this build"]),
+    ...(!status.legacyConnectEnabled || !status.desired || status.linkMode !== "managed"
       ? []
       : status.reachability === null
         ? [
@@ -555,7 +572,7 @@ export const runCloudCommand = Effect.fn("cloud.cli.run_cloud_command")(function
       Layer.provide(ServerSecretStore.layer),
       Layer.provide(ExternalLauncher.layer),
     ),
-    RelayClient.layerCloudflared({ baseDir: config.baseDir }),
+    layerDisabledRelayClient,
     EnvironmentAuth.layerRuntime,
     CliService.layer(config),
     RelayTracing.layerHeadlessRelayClient.pipe(Layer.provide(ManagedPolicy.layer)),
@@ -569,6 +586,12 @@ export const runCloudCommand = Effect.fn("cloud.cli.run_cloud_command")(function
 
 /** Status, unlink, and logout stay available so a machine can leave Connect the policy turned off. */
 export const requireConnectAllowed = Effect.gen(function* () {
+  if (!(yield* LegacyCloudConnectEnabled)) {
+    return yield* new CliError.UserError({
+      cause: "connect",
+      userMessage: LEGACY_CLOUD_CONNECT_DISABLED_MESSAGE,
+    });
+  }
   const policy = yield* ManagedPolicy.ManagedPolicy;
   if (!ManagedLimits.allowsConnect(policy)) {
     return yield* ManagedLimits.refuseConnect(policy);
@@ -685,6 +708,7 @@ const connectStatusCommand = Command.make("status", {
         const secrets = yield* ServerSecretStore.ServerSecretStore;
         const relayClient = yield* RelayClient.RelayClient;
         const tokens = yield* CliTokenManager.CloudCliTokenManager;
+        const legacyConnectEnabled = yield* LegacyCloudConnectEnabled;
         const [
           desired,
           authenticated,
@@ -709,17 +733,32 @@ const connectStatusCommand = Command.make("status", {
         );
         // A publish-only link has no tunnel for other devices to reach.
         const reachability =
-          desired && linkMode === "managed" ? yield* checkLiveReachability() : null;
+          legacyConnectEnabled && desired && linkMode === "managed"
+            ? yield* checkLiveReachability()
+            : null;
+        const legacyConfigIgnored =
+          !legacyConnectEnabled &&
+          (desired || Option.isSome(cloudUserId) || Option.isSome(relayUrl));
         const status: CloudCliStatus = {
-          desired,
+          desired: legacyConnectEnabled && desired,
+          legacyConnectEnabled,
+          legacyConfigIgnored,
           authenticated,
-          linked: Option.isSome(cloudUserId),
-          revoked: Option.isSome(cloudUserId) && Option.isSome(revoked),
-          cloudUserId: Option.isSome(cloudUserId) ? bytesToString(cloudUserId.value) : null,
-          relayUrl: Option.isSome(relayUrl) ? bytesToString(relayUrl.value) : null,
-          publishAgentActivity: isAgentActivityPublishingEnabledValue(
-            Option.isSome(publishAgentActivity) ? bytesToString(publishAgentActivity.value) : null,
-          ),
+          linked: legacyConnectEnabled && Option.isSome(cloudUserId),
+          revoked: legacyConnectEnabled && Option.isSome(cloudUserId) && Option.isSome(revoked),
+          cloudUserId:
+            legacyConnectEnabled && Option.isSome(cloudUserId)
+              ? bytesToString(cloudUserId.value)
+              : null,
+          relayUrl:
+            legacyConnectEnabled && Option.isSome(relayUrl) ? bytesToString(relayUrl.value) : null,
+          publishAgentActivity:
+            legacyConnectEnabled &&
+            isAgentActivityPublishingEnabledValue(
+              Option.isSome(publishAgentActivity)
+                ? bytesToString(publishAgentActivity.value)
+                : null,
+            ),
           relayClient: executable,
           linkMode,
           reachability,

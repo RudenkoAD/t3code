@@ -369,6 +369,21 @@ export function selectPairingEndpoint(
   );
 }
 
+export function tunnelerPairingEndpoint(origin: string): AdvertisedEndpoint {
+  return {
+    id: `tunneler:${origin}`,
+    label: "Corporate Tunneler",
+    provider: { id: "tunneler", label: "Tunneler", kind: "tunnel", isAddon: false },
+    httpBaseUrl: origin,
+    wsBaseUrl: origin.replace(/^https:/u, "wss:"),
+    reachability: "private-network",
+    compatibility: { hostedHttpsApp: "requires-configuration", desktopApp: "compatible" },
+    source: "desktop-addon",
+    status: "available",
+    isDefault: true,
+  };
+}
+
 export function isTailscaleHttpsEndpoint(endpoint: AdvertisedEndpoint): boolean {
   return endpoint.id.startsWith("tailscale-magicdns:");
 }

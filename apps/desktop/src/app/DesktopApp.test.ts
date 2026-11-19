@@ -36,6 +36,7 @@ import * as DesktopPreReadyPlatform from "./DesktopPreReadyPlatform.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as DesktopTunneler from "../backend/DesktopTunneler.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
@@ -195,6 +196,14 @@ it.effect.each([false, true])(
               },
             ]),
           } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]),
+          Effect.provideService(
+            DesktopTunneler.DesktopTunneler,
+            DesktopTunneler.DesktopTunneler.of({
+              start: Effect.succeed({ running: false, origin: null, error: null }),
+              getState: Effect.succeed({ running: false, origin: null, error: null }),
+              stop: Effect.succeed({ running: false, origin: null, error: null }),
+            }),
+          ),
           Effect.provideService(DesktopServerExposure.DesktopServerExposure, {
             configureFromSettings: () => Effect.succeed({ mode: "local-only" }),
             backendConfig: Effect.succeed({ httpBaseUrl: new URL("http://127.0.0.1:3773") }),

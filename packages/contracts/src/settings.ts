@@ -1725,7 +1725,7 @@ export const resolveProjectProviderInstanceId = (
   projectId: ProjectId | null,
   instanceId: ProviderInstanceId,
 ): ProviderInstanceId | undefined => {
-  if (projectId === null) return instanceId;
+  if (projectId === null || instanceId === "opencode") return instanceId;
   // Partial settings are used by older clients and narrow helper tests; the server always has both maps.
   if (settings.projectProfiles === undefined || settings.profileProviderSettings === undefined) {
     return instanceId;
@@ -1802,7 +1802,11 @@ export const resolveProjectProviderInstanceEnabled = (
       settings.projectProfiles === undefined
         ? undefined
         : resolveProjectProfile(settings as Pick<ServerSettings, "projectProfiles">, projectId);
-    if (profile === undefined || settings.profileProviderSettings === undefined) {
+    if (
+      profile === undefined ||
+      settings.profileProviderSettings === undefined ||
+      scopedId === "opencode"
+    ) {
       const legacyOverride =
         settings.projectSettingsOverrides[projectId]?.providerInstances?.[instanceId]?.enabled;
       if (legacyOverride !== undefined) return legacyOverride;
