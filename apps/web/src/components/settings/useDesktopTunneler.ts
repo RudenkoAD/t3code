@@ -56,11 +56,10 @@ export function useDesktopTunneler(bridge: TunnelerBridge | null) {
           error: error instanceof Error ? error.message : "Could not change Tunneler state.",
         }));
       }
-    } finally {
-      if (version === revision.current) {
-        revision.current++;
-        setStopping(false);
-      }
+    }
+    if (version === revision.current) {
+      revision.current++;
+      setStopping(false);
     }
   }
 
